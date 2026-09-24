@@ -2,6 +2,6 @@ name: astrbot_plugin_mio_studio
 display_name: Mio 绘页
 author: arena-agent
 version: 2.0.0
-desc: 对接本地部署的 Mio · 绘页（comfy-comic-studio）：/mio_ls 列出工作流 / 分幕 / 预设，/mio_use 1 2 3 一键装配并开始生成，/mio_status 查进度，/mio_get 按默认模板导出 html/zip/pdf 或直接发图；完成通知策略与默认参数在独立控制面板中配置。需配合附带的 Mio 补丁。
+desc: 对接本地部署的 Mio · 绘页（comfy-comic-studio）：/mio ls 列出工作流 / 分幕 / 预设，/mio use 1 2 3 一键装配并开始生成，/mio status 查进度，/mio get 按默认模板导出 html/zip/pdf 或直接发图；完成通知策略与默认参数在独立控制面板中配置。需配合附带的 Mio 补丁。
 short_desc: 用编号调度 Mio · 绘页 生成画册并取回成品
 astrbot_version: ">=4.27,<5"

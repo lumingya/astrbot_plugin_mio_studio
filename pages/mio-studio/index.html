@@ -19,7 +19,7 @@
           </svg>
           <div>
             <h1>Mio 绘页 · 控制面板</h1>
-            <p class="sub">配置 <code>/mio_use</code> 的默认参数、导出模板与完成通知策略</p>
+            <p class="sub">配置 <code>/mio use</code> 的默认参数、导出模板与完成通知策略</p>
           </div>
         </div>
         <div class="status-pill" id="conn-pill" title="Mio 连接状态">
@@ -74,7 +74,7 @@
               <h2>生成默认值</h2>
               <button class="btn ghost" id="btn-refresh-catalog">↻ 从 Mio 刷新资源</button>
             </div>
-            <p class="hint">下面的编号与聊天里 <code>/mio_ls</code> 的编号一致。<code>/mio_use &lt;分幕#&gt;</code> 或参数填 0 时使用这里的默认值。</p>
+            <p class="hint">下面的编号与聊天里 <code>/mio ls</code> 的编号一致。<code>/mio use &lt;分幕#&gt;</code> 或参数填 0 时使用这里的默认值。</p>
             <div class="grid2">
               <label>默认图像通道<select id="f-channel_id"></select></label>
               <label>默认工作流（ComfyUI 通道）<select id="f-workflow_id"></select></label>
@@ -158,13 +158,13 @@
           <div class="card">
             <h2>聊天指令</h2>
             <table class="cmds">
-              <tr><td><code>/mio_ls</code></td><td>列出工作流 / 分幕 / 预设（带编号）；<code>/mio_ls_wf</code> <code>/mio_ls_sb</code> <code>/mio_ls_ps</code> 单独列出，<code>/mio_ls_ch</code> 通道，<code>/mio_ls_tpl</code> 导出模板</td></tr>
-              <tr><td><code>/mio_use 1 2 3</code></td><td>用第 1 个工作流 + 第 2 个分幕 + 第 3 个预设创建任务并开始；预设可多选 <code>3,4</code>，第 4 个参数可选通道；<code>/mio_use 2</code> 只给分幕，其余用默认值</td></tr>
-              <tr><td><code>/mio_jobs</code></td><td>我的任务列表（编号 #）</td></tr>
-              <tr><td><code>/mio_status [#]</code></td><td>查看进度（默认最近一个）</td></tr>
-              <tr><td><code>/mio_get [#] [html|zip|pdf|img] [模板#]</code></td><td>导出并发送成品文件；<code>img</code> 直接发送每幕图片</td></tr>
-              <tr><td><code>/mio_pause # /mio_resume # /mio_cancel # /mio_rm #</code></td><td>暂停 / 继续（或重试失败任务）/ 停止 / 移除记录</td></tr>
-              <tr><td><code>/mio_ping</code></td><td>检查与 Mio 的连接</td></tr>
+              <tr><td><code>/mio ls</code></td><td>列出工作流 / 分幕 / 预设（带编号）；<code>/mio ls wf</code> <code>/mio ls sb</code> <code>/mio ls ps</code> 单独列出，<code>/mio ls ch</code> 通道，<code>/mio ls tpl</code> 导出模板</td></tr>
+              <tr><td><code>/mio use 1 2 3</code></td><td>用第 1 个工作流 + 第 2 个分幕 + 第 3 个预设创建任务并开始；预设可多选 <code>3,4</code>，第 4 个参数可选通道；<code>/mio use 2</code> 只给分幕，其余用默认值</td></tr>
+              <tr><td><code>/mio jobs</code></td><td>我的任务列表（编号 #）</td></tr>
+              <tr><td><code>/mio status [#]</code></td><td>查看进度（默认最近一个）</td></tr>
+              <tr><td><code>/mio get [#] [html|zip|pdf|img] [模板#]</code></td><td>导出并发送成品文件；<code>img</code> 直接发送每幕图片</td></tr>
+              <tr><td><code>/mio pause # /mio resume # /mio cancel # /mio rm #</code></td><td>暂停 / 继续（或重试失败任务）/ 停止 / 移除记录</td></tr>
+              <tr><td><code>/mio ping</code></td><td>检查与 Mio 的连接</td></tr>
             </table>
           </div>
         </section>

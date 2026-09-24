@@ -122,9 +122,9 @@
   function notifyHint(mode) {
     return {
       images: "任务完成后自动把每一幕图片发回发起任务的会话（QQ 默认合并转发）",
-      summary: "只发送一条完成摘要，之后用 /mio_get # 取件",
+      summary: "只发送一条完成摘要，之后用 /mio get # 取件",
       export: "任务完成后自动用「默认导出格式 + 默认模板」导出并发送文件",
-      silent: "不主动通知，只能用 /mio_status /mio_get 查询",
+      silent: "不主动通知，只能用 /mio status / /mio get 查询",
     }[mode] || "";
   }
   function applyCatalogToForm() {
@@ -153,11 +153,11 @@
   function renderCatalog() {
     const cat = state.catalog;
     const groups = [
-      ["workflows", "工作流 /mio_ls_wf", (w) => `${w.nodeCount} 节点`],
-      ["storyboards", "分幕 / 分镜 /mio_ls_sb", (s) => `${s.frameCount} 幕`],
-      ["presets", "预设 /mio_ls_ps", (p) => (p.category === "scenes" ? "场景" : "角色") + (p.entries || []).filter((e) => e.value && e.key !== "character_display_name").slice(0, 2).map((e) => ` · ${e.key}=${String(e.value).slice(0, 16)}`).join("")],
-      ["channels", "图像通道 /mio_ls_ch", (c) => `${c.provider}${c.model ? " / " + c.model : ""}`],
-      ["layouts", "导出模板 /mio_ls_tpl", (l) => l.layout],
+      ["workflows", "工作流 /mio ls wf", (w) => `${w.nodeCount} 节点`],
+      ["storyboards", "分幕 / 分镜 /mio ls sb", (s) => `${s.frameCount} 幕`],
+      ["presets", "预设 /mio ls ps", (p) => (p.category === "scenes" ? "场景" : "角色") + (p.entries || []).filter((e) => e.value && e.key !== "character_display_name").slice(0, 2).map((e) => ` · ${e.key}=${String(e.value).slice(0, 16)}`).join("")],
+      ["channels", "图像通道 /mio ls ch", (c) => `${c.provider}${c.model ? " / " + c.model : ""}`],
+      ["layouts", "导出模板 /mio ls tpl", (l) => l.layout],
     ];
     const defaults = cat.defaults || {};
     $("#catalog").innerHTML = groups.map(([kind, title, meta]) => {
@@ -217,7 +217,7 @@
       const data = await get("tasks", { limit: 50 });
       state.tasks = data;
       const box = $("#tasks");
-      box.innerHTML = data.items.length ? data.items.map(taskCard).join("") : '<div class="empty">还没有任务。用 /mio_use 或上面的「新建任务」创建。</div>';
+      box.innerHTML = data.items.length ? data.items.map(taskCard).join("") : '<div class="empty">还没有任务。用 /mio use 或上面的「新建任务」创建。</div>';
       if (data.others) box.insertAdjacentHTML("beforeend", `<div class="empty">Mio 队列中另有 ${data.others} 个非本插件创建的任务</div>`);
       const active = data.items.some((t) => ["running", "ready", "preparing"].includes(t.statusKey));
       clearTimeout(state.timer);

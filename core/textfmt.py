@@ -32,20 +32,20 @@ STATUS_ICON = {
     "missing": "🗑",
 }
 KIND_LABEL = {"workflows": "工作流", "storyboards": "分幕 / 分镜", "presets": "预设", "channels": "图像通道", "layouts": "导出模板"}
-KIND_CMD = {"workflows": "/mio_ls_wf", "storyboards": "/mio_ls_sb", "presets": "/mio_ls_ps", "channels": "/mio_ls_ch", "layouts": "/mio_ls_tpl"}
+KIND_CMD = {"workflows": "/mio ls wf", "storyboards": "/mio ls sb", "presets": "/mio ls ps", "channels": "/mio ls ch", "layouts": "/mio ls tpl"}
 
 HELP_TEXT = """🎨 Mio 绘页 · 指令
-/mio_ls — 列出工作流 / 分幕 / 预设（带编号）
-/mio_ls_wf | /mio_ls_sb | /mio_ls_ps — 单独列出
-/mio_ls_ch | /mio_ls_tpl — 图像通道 / 导出模板
-/mio_use <工作流#> <分幕#> <预设#[,预设#]> [通道#] — 创建并开始生成
-/mio_use <分幕#> — 用面板里配置的默认工作流 / 预设 / 通道
-/mio_jobs — 我的任务列表（编号 #）
-/mio_status [#] — 查看任务进度（默认最近一个）
-/mio_get [#] [html|zip|pdf|img] [模板#] — 下载成品 / 发送图片
-/mio_pause # | /mio_resume # | /mio_cancel # | /mio_rm # — 任务控制
-/mio_ping — 检查与 Mio 的连接
-提示：编号以 /mio_ls 当前输出为准；0 表示使用默认值。"""
+/mio ls — 列出工作流 / 分幕 / 预设（带编号）
+/mio ls wf | /mio ls sb | /mio ls ps — 单独列出
+/mio ls ch | /mio ls tpl — 图像通道 / 导出模板
+/mio use <工作流#> <分幕#> <预设#[,预设#]> [通道#] — 创建并开始生成
+/mio use <分幕#> — 用面板里配置的默认工作流 / 预设 / 通道
+/mio jobs — 我的任务列表（编号 #）
+/mio status [#] — 查看任务进度（默认最近一个）
+/mio get [#] [html|zip|pdf|img] [模板#] — 下载成品 / 发送图片
+/mio pause # | /mio resume # | /mio cancel # | /mio rm # — 任务控制
+/mio ping — 检查与 Mio 的连接
+提示：编号以 /mio ls 当前输出为准；0 表示使用默认值。"""
 
 
 def clip(text: Any, limit: int = 40) -> str:
@@ -102,7 +102,7 @@ def format_list(kind: str, items: list[dict[str, Any]], *, defaults: dict[str, A
 def format_catalog(catalog: dict[str, Any], kinds: tuple[str, ...], defaults: dict[str, Any] | None = None) -> str:
     blocks = [format_list(kind, catalog.get(kind) or [], defaults=defaults) for kind in kinds]
     if kinds == ("workflows", "storyboards", "presets"):
-        blocks.append("用法：/mio_use <工作流#> <分幕#> <预设#> — 例如 /mio_use 1 1 1")
+        blocks.append("用法：/mio use <工作流#> <分幕#> <预设#> — 例如 /mio use 1 1 1")
     return "\n\n".join(blocks)
 
 
@@ -134,10 +134,10 @@ def format_job_line(view: dict[str, Any]) -> str:
 
 def format_jobs(views: list[dict[str, Any]], *, others: int = 0) -> str:
     if not views:
-        text = "还没有通过本插件创建的任务。用 /mio_ls 查看资源，再 /mio_use 创建。"
+        text = "还没有通过本插件创建的任务。用 /mio ls 查看资源，再 /mio use 创建。"
     else:
         text = "🗂 我的任务\n" + "\n".join(format_job_line(v) for v in views)
-        text += "\n\n/mio_status # 查看详情，/mio_get # 下载成品"
+        text += "\n\n/mio status # 查看详情，/mio get # 下载成品"
     if others:
         text += f"\n（Mio 队列中另有 {others} 个非本插件创建的任务）"
     return text
@@ -167,7 +167,7 @@ def format_task(view: dict[str, Any]) -> str:
     if view.get("created_at"):
         lines.append("创建：" + time.strftime("%m-%d %H:%M", time.localtime(float(view["created_at"]))))
     if key == "complete":
-        lines.append(f"下载：/mio_get {view['num']} [html|zip|pdf|img] [模板#]")
+        lines.append(f"下载：/mio get {view['num']} [html|zip|pdf|img] [模板#]")
     elif key in ("failed", "interrupted", "cancelled", "paused", "standby"):
-        lines.append(f"继续 / 重试：/mio_resume {view['num']}" + (f"　已生成部分可 /mio_get {view['num']}" if view.get("done") else ""))
+        lines.append(f"继续 / 重试：/mio resume {view['num']}" + (f"　已生成部分可 /mio get {view['num']}" if view.get("done") else ""))
     return "\n".join(lines)

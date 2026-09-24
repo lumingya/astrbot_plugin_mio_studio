@@ -284,7 +284,7 @@ class MioStudioService:
         matches = [it for it in items if str(it.get("title") or "").startswith(text)]
         if len(matches) == 1:
             return matches[0]
-        raise ServiceError(f"找不到{label}「{text}」，请用 /mio_ls 查看编号")
+        raise ServiceError(f"找不到{label}「{text}」，请用 /mio ls 查看编号")
 
     def _default_item(self, items: list[dict[str, Any]], configured: str, label: str, *, required: bool) -> dict[str, Any] | None:
         if configured:
@@ -405,7 +405,7 @@ class MioStudioService:
                 record = self.store.update(task["id"], status="ready") or record
             except MioError as exc:
                 self.store.update(task["id"], status="standby", error=exc.message)
-                raise ServiceError(f"任务 #{record['num']} 已创建但启动失败：{exc.message}（可用 /mio_resume {record['num']} 重试）", code=exc.code, status=exc.status or 502)
+                raise ServiceError(f"任务 #{record['num']} 已创建但启动失败：{exc.message}（可用 /mio resume {record['num']} 重试）", code=exc.code, status=exc.status or 502)
         self._tasks_at = 0.0
         self.ensure_poller()
         return record
@@ -475,14 +475,14 @@ class MioStudioService:
         if token in (None, "", "0"):
             record = self.store.latest_for(umo) or self.store.latest_for(None)
             if not record:
-                raise ServiceError("还没有任务，先用 /mio_use 创建一个")
+                raise ServiceError("还没有任务，先用 /mio use 创建一个")
             return record
         text = str(token).strip().lstrip("#")
         if text.isdigit():
             record = self.store.by_num(int(text))
             if record:
                 return record
-            raise ServiceError(f"没有编号为 #{text} 的任务（/mio_jobs 查看）")
+            raise ServiceError(f"没有编号为 #{text} 的任务（/mio jobs 查看）")
         record = self.store.get(text)
         if record:
             return record
@@ -504,7 +504,7 @@ class MioStudioService:
                 if view.get("statusKey") in ("running", "ready", "preparing"):
                     return f"ℹ️ 任务 #{num} 正在进行中（{view.get('done', 0)}/{view.get('total', 0)} 幕）"
                 if view.get("statusKey") == "complete":
-                    return f"ℹ️ 任务 #{num} 已全部完成，用 /mio_get {num} 取件"
+                    return f"ℹ️ 任务 #{num} 已全部完成，用 /mio get {num} 取件"
                 await self.client.start_task(record["id"])
                 self.store.update(record["id"], notified=False, status="ready")
                 self._tasks_at = 0.0
@@ -513,7 +513,7 @@ class MioStudioService:
             if action == "cancel":
                 await self.client.production("cancel", {"id": record["id"]})
                 self.store.update(record["id"], notified=True, status="cancelled")
-                return f"⏹ 任务 #{num} 已停止（已生成的分幕保留，可 /mio_resume {num} 补跑）"
+                return f"⏹ 任务 #{num} 已停止（已生成的分幕保留，可 /mio resume {num} 补跑）"
             if action == "remove":
                 try:
                     await self.client.production("remove", {"id": record["id"], "deleteAlbums": False})
@@ -688,7 +688,7 @@ class MioStudioService:
         if mode == "silent":
             return
         if mode == "summary":
-            await self.send_text(umo, summary + f"\n下载：/mio_get {num} [html|zip|pdf|img] [模板#]")
+            await self.send_text(umo, summary + f"\n下载：/mio get {num} [html|zip|pdf|img] [模板#]")
             return
         if mode == "images":
             try:
@@ -700,7 +700,7 @@ class MioStudioService:
             try:
                 await self.send_export(record, umo)
             except ServiceError as exc:
-                await self.send_text(umo, summary + f"\n（自动导出失败：{exc.message}，可用 /mio_get {num} 重试）")
+                await self.send_text(umo, summary + f"\n（自动导出失败：{exc.message}，可用 /mio get {num} 重试）")
 
     # ----------------------------------------------------------------- poller
     def ensure_poller(self) -> None:

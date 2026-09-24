@@ -73,7 +73,7 @@ class PageApi:
                 "options": {
                     "notify_modes": [
                         {"value": "images", "label": "自动发送每一幕图片"},
-                        {"value": "summary", "label": "只发完成摘要（/mio_get 取件）"},
+                        {"value": "summary", "label": "只发完成摘要（/mio get 取件）"},
                         {"value": "export", "label": "自动用默认模板导出并发送文件"},
                         {"value": "silent", "label": "不通知（仅查询）"},
                     ],

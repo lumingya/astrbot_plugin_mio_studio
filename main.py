@@ -2,7 +2,7 @@
 
 Chat commands drive a locally deployed Mio · 绘页 (comfy-comic-studio):
 list numbered resources (workflows / storyboards / presets), assemble and
-start a production task with ``/mio_use``, follow its progress and download
+start a production task with ``/mio use``, follow its progress and download
 the finished album in the export format and layout configured in the
 standalone control panel.
 """
@@ -106,12 +106,12 @@ class MioStudioPlugin(Star):
         return format_catalog(cat, kinds, defaults)
 
     # --------------------------------------------------------------- commands
-    @filter.command("mio_help", alias={"mio"})
+    @filter.command("mio help", alias={"mio"})
     async def cmd_help(self, event: AstrMessageEvent):
         """Mio 绘页指令帮助"""
         yield event.plain_result(HELP_TEXT)
 
-    @filter.command("mio_ping")
+    @filter.command("mio ping")
     async def cmd_ping(self, event: AstrMessageEvent):
         """检查与 Mio 的连接"""
         if not self._allowed(event):
@@ -127,46 +127,45 @@ class MioStudioPlugin(Star):
         text += f"\n本插件任务：{tasks.get('total', 0)} 个，进行中 {tasks.get('active', 0)} 个"
         yield event.plain_result(text)
 
-    @filter.command("mio_ls")
-    async def cmd_ls(self, event: AstrMessageEvent):
-        """列出工作流 / 分幕 / 预设（带编号）"""
-        yield event.plain_result(await self._list(event, ("workflows", "storyboards", "presets")))
+    @filter.command("mio ls")
+    async def cmd_ls(self, event: AstrMessageEvent, target: str = ""):
+        """列出工作流 / 分幕 / 预设 / 通道 / 模板（支持 /mio ls [wf|sb|ps|ch|tpl]）"""
+        target = (target or "").strip().lower()
+        if not target:
+            kinds = ("workflows", "storyboards", "presets")
+        elif target in ("wf", "workflow", "workflows", "工作流"):
+            kinds = ("workflows",)
+        elif target in ("sb", "storyboard", "storyboards", "分幕", "分镜"):
+            kinds = ("storyboards",)
+        elif target in ("ps", "preset", "presets", "预设"):
+            kinds = ("presets",)
+        elif target in ("ch", "channel", "channels", "通道"):
+            kinds = ("channels",)
+        elif target in ("tpl", "layout", "layouts", "template", "templates", "模板"):
+            kinds = ("layouts",)
+        else:
+            yield event.plain_result(
+                f"❌ 未知类型「{target}」，支持：\n"
+                "• /mio ls wf  — 列出工作流\n"
+                "• /mio ls sb  — 列出分幕\n"
+                "• /mio ls ps  — 列出预设\n"
+                "• /mio ls ch  — 列出通道\n"
+                "• /mio ls tpl — 列出导出模板\n"
+                "或直接使用 /mio ls 列出常用资源。"
+            )
+            return
+        yield event.plain_result(await self._list(event, kinds))
 
-    @filter.command("mio_ls_wf")
-    async def cmd_ls_wf(self, event: AstrMessageEvent):
-        """列出工作流"""
-        yield event.plain_result(await self._list(event, ("workflows",)))
-
-    @filter.command("mio_ls_sb")
-    async def cmd_ls_sb(self, event: AstrMessageEvent):
-        """列出分幕 / 分镜"""
-        yield event.plain_result(await self._list(event, ("storyboards",)))
-
-    @filter.command("mio_ls_ps")
-    async def cmd_ls_ps(self, event: AstrMessageEvent):
-        """列出预设"""
-        yield event.plain_result(await self._list(event, ("presets",)))
-
-    @filter.command("mio_ls_ch")
-    async def cmd_ls_ch(self, event: AstrMessageEvent):
-        """列出图像通道"""
-        yield event.plain_result(await self._list(event, ("channels",)))
-
-    @filter.command("mio_ls_tpl")
-    async def cmd_ls_tpl(self, event: AstrMessageEvent):
-        """列出导出模板"""
-        yield event.plain_result(await self._list(event, ("layouts",)))
-
-    @filter.command("mio_use")
+    @filter.command("mio use")
     async def cmd_use(self, event: AstrMessageEvent, args: GreedyStr):
-        """/mio_use <工作流#> <分幕#> <预设#[,预设#]> [通道#] 创建并开始生成"""
+        """/mio use <工作流#> <分幕#> <预设#[,预设#]> [通道#] 创建并开始生成"""
         problem = await self._guard(event)
         if problem:
             yield event.plain_result(problem)
             return
         tokens = self._tokens(args)
         if not tokens:
-            yield event.plain_result("用法：/mio_use <工作流#> <分幕#> <预设#[,预设#]> [通道#]\n或 /mio_use <分幕#>（使用面板默认的工作流 / 预设 / 通道）\n先用 /mio_ls 查看编号。")
+            yield event.plain_result("用法：/mio use <工作流#> <分幕#> <预设#[,预设#]> [通道#]\n或 /mio use <分幕#>（使用面板默认的工作流 / 预设 / 通道）\n先用 /mio ls 查看编号。")
             return
         if len(tokens) == 1:
             workflow, storyboard, presets, channel = None, tokens[0], [], None
@@ -194,10 +193,10 @@ class MioStudioPlugin(Star):
         lines.append(f"分幕：{sel.get('storyboardTitle')}（{selection['storyboard'].get('frameCount', '?')} 幕）")
         lines.append("预设：" + " + ".join(sel.get("presetTitles") or []))
         lines.append(f"通道：{sel.get('channelTitle')}")
-        lines.append(f"进度：/mio_status {record['num']}　成品：/mio_get {record['num']}")
+        lines.append(f"进度：/mio status {record['num']}　成品：/mio get {record['num']}")
         yield event.plain_result("\n".join(lines))
 
-    @filter.command("mio_jobs")
+    @filter.command("mio jobs")
     async def cmd_jobs(self, event: AstrMessageEvent):
         """我的任务列表"""
         problem = await self._guard(event)
@@ -211,9 +210,9 @@ class MioStudioPlugin(Star):
             return
         yield event.plain_result(format_jobs(views, others=others))
 
-    @filter.command("mio_status")
+    @filter.command("mio status")
     async def cmd_status(self, event: AstrMessageEvent, num: str = ""):
-        """查看任务进度：/mio_status [#]"""
+        """查看任务进度：/mio status [#]"""
         problem = await self._guard(event)
         if problem:
             yield event.plain_result(problem)
@@ -226,9 +225,9 @@ class MioStudioPlugin(Star):
             return
         yield event.plain_result(format_task(view))
 
-    @filter.command("mio_get")
+    @filter.command("mio get")
     async def cmd_get(self, event: AstrMessageEvent, args: GreedyStr):
-        """下载成品：/mio_get [#] [html|zip|pdf|img] [模板#]"""
+        """下载成品：/mio get [#] [html|zip|pdf|img] [模板#]"""
         problem = await self._guard(event)
         if problem:
             yield event.plain_result(problem)
@@ -245,7 +244,7 @@ class MioStudioPlugin(Star):
                 num = token
             elif layout is None:
                 if low.isascii() and low.isalpha() and len(low) <= 6:
-                    yield event.plain_result(f"❌ 未知格式「{token}」，支持 html / zip / pdf / img；导出模板请用 /mio_ls_tpl 的编号")
+                    yield event.plain_result(f"❌ 未知格式「{token}」，支持 html / zip / pdf / img；导出模板请用 /mio ls tpl 的编号")
                     return
                 layout = token
         try:
@@ -282,22 +281,22 @@ class MioStudioPlugin(Star):
         except Exception as exc:
             return self._err(exc)
 
-    @filter.command("mio_pause")
+    @filter.command("mio pause")
     async def cmd_pause(self, event: AstrMessageEvent, num: str = ""):
-        """暂停任务：/mio_pause #"""
+        """暂停任务：/mio pause #"""
         yield event.plain_result(await self._action(event, num, "pause"))
 
-    @filter.command("mio_resume")
+    @filter.command("mio resume")
     async def cmd_resume(self, event: AstrMessageEvent, num: str = ""):
-        """继续 / 重试任务：/mio_resume #"""
+        """继续 / 重试任务：/mio resume #"""
         yield event.plain_result(await self._action(event, num, "resume"))
 
-    @filter.command("mio_cancel")
+    @filter.command("mio cancel")
     async def cmd_cancel(self, event: AstrMessageEvent, num: str = ""):
-        """停止任务：/mio_cancel #"""
+        """停止任务：/mio cancel #"""
         yield event.plain_result(await self._action(event, num, "cancel"))
 
-    @filter.command("mio_rm")
+    @filter.command("mio rm")
     async def cmd_rm(self, event: AstrMessageEvent, num: str = ""):
-        """移除任务记录：/mio_rm #"""
+        """移除任务记录：/mio rm #"""
         yield event.plain_result(await self._action(event, num, "remove"))

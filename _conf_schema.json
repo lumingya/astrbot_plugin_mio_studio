@@ -25,14 +25,14 @@
     }
   },
   "defaults": {
-    "description": "生成默认值（/mio_use 省略参数或填 0 时使用）",
+    "description": "生成默认值（/mio use 省略参数或填 0 时使用）",
     "type": "object",
     "items": {
       "channel_id": {
         "description": "默认图像通道 ID",
         "type": "string",
         "default": "",
-        "hint": "留空时优先使用 provider 为 comfyui 的通道。可在控制面板下拉选择，或用 /mio_ls_ch 查看"
+        "hint": "留空时优先使用 provider 为 comfyui 的通道。可在控制面板下拉选择，或用 /mio ls ch 查看"
       },
       "workflow_id": {
         "description": "默认工作流 ID",
@@ -73,7 +73,7 @@
     }
   },
   "export": {
-    "description": "成品导出默认值（/mio_get 与自动导出）",
+    "description": "成品导出默认值（/mio get 与自动导出）",
     "type": "object",
     "items": {
       "format": {
@@ -86,7 +86,7 @@
         "description": "默认导出模板（Mio 版式 ID）",
         "type": "string",
         "default": "",
-        "hint": "留空取 Mio 中第一个模板；控制面板可下拉选择，/mio_ls_tpl 查看编号"
+        "hint": "留空取 Mio 中第一个模板；控制面板可下拉选择，/mio ls tpl 查看编号"
       },
       "image_profile": {
         "description": "图片处理档位",
@@ -127,7 +127,7 @@
         "type": "string",
         "default": "summary",
         "options": ["images", "summary", "export", "silent"],
-        "hint": "images 自动发送每幕图片；summary 只发摘要（用 /mio_get 取件）；export 自动用默认模板导出并发送文件；silent 不通知"
+        "hint": "images 自动发送每幕图片；summary 只发摘要（用 /mio get 取件）；export 自动用默认模板导出并发送文件；silent 不通知"
       },
       "send_mode": {
         "description": "图片发送方式",
