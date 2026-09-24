@@ -1,0 +1,12 @@
+{
+  "metadata": {
+    "display_name": "Mio Studio",
+    "short_desc": "Drive a local Mio · 绘页 (comfy-comic-studio) by number and fetch the results",
+    "desc": "Integrates a locally deployed Mio · 绘页 (comfy-comic-studio): /mio_ls lists workflows / storyboards / presets with numbers, /mio_use 1 2 3 assembles and starts a production task, /mio_status shows progress and /mio_get exports html/zip/pdf with the configured layout (or sends the frame images). Completion notifications and defaults are configured in a standalone control panel. Requires the bundled Mio patch."
+  },
+  "pages": {
+    "mio-studio": {
+      "title": "Mio Studio · Control Panel"
+    }
+  }
+}

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mio 绘页 · 控制面板</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script src="/api/plugin/page/bridge-sdk.js"></script>
+  </head>
+  <body>
+    <div id="app" class="app">
+      <header class="top">
+        <div class="brand">
+          <svg viewBox="0 0 48 48" aria-hidden="true" class="brand-mark">
+            <rect x="5" y="7" width="38" height="34" rx="7" fill="var(--accent-soft)"/>
+            <rect x="10" y="12" width="12" height="11" rx="2" fill="var(--accent)"/>
+            <rect x="26" y="12" width="12" height="11" rx="2" fill="var(--accent)" opacity=".55"/>
+            <rect x="10" y="27" width="28" height="9" rx="2" fill="var(--accent)" opacity=".3"/>
+          </svg>
+          <div>
+            <h1>Mio 绘页 · 控制面板</h1>
+            <p class="sub">配置 <code>/mio_use</code> 的默认参数、导出模板与完成通知策略</p>
+          </div>
+        </div>
+        <div class="status-pill" id="conn-pill" title="Mio 连接状态">
+          <span class="dot"></span><span id="conn-text">正在连接…</span>
+        </div>
+      </header>
+
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="connect">连接</button>
+        <button class="tab" data-tab="defaults">生成默认值</button>
+        <button class="tab" data-tab="export">导出与通知</button>
+        <button class="tab" data-tab="tasks">任务</button>
+        <button class="tab" data-tab="help">指令速查</button>
+      </nav>
+
+      <main class="content">
+        <!-- ================= connect ================= -->
+        <section class="panel active" data-panel="connect">
+          <div class="card">
+            <h2>Mio 连接</h2>
+            <div class="grid2">
+              <label>Mio 地址<input id="f-base_url" type="text" placeholder="http://127.0.0.1:8777" /></label>
+              <label>请求超时（秒）<input id="f-request_timeout" type="number" min="5" max="600" /></label>
+              <label class="span2">MIO_API_TOKEN
+                <div class="inline">
+                  <input id="f-api_token" type="password" placeholder="本地运行可留空（免密）；留空表示不修改" autocomplete="off" />
+                  <button class="btn ghost" id="btn-token-eye" type="button" title="显示 / 隐藏">👁</button>
+                </div>
+                <small id="token-hint" class="hint"></small>
+              </label>
+            </div>
+            <div class="actions">
+              <button class="btn primary" id="btn-save-connect">保存连接</button>
+              <button class="btn" id="btn-test">测试连接</button>
+            </div>
+            <div id="conn-detail" class="detail"></div>
+          </div>
+          <div class="card">
+            <h2>权限</h2>
+            <label class="check"><input type="checkbox" id="f-admin_only" /> 仅管理员可使用指令</label>
+            <label>允许的会话（unified_msg_origin 前缀，每行一个；留空不限制）
+              <textarea id="f-allowed_sessions" rows="3" placeholder="aiocqhttp:GroupMessage:123456"></textarea>
+            </label>
+            <div class="actions"><button class="btn primary" id="btn-save-perm">保存权限</button></div>
+          </div>
+        </section>
+
+        <!-- ================= defaults ================= -->
+        <section class="panel" data-panel="defaults">
+          <div class="card">
+            <div class="card-head">
+              <h2>生成默认值</h2>
+              <button class="btn ghost" id="btn-refresh-catalog">↻ 从 Mio 刷新资源</button>
+            </div>
+            <p class="hint">下面的编号与聊天里 <code>/mio_ls</code> 的编号一致。<code>/mio_use &lt;分幕#&gt;</code> 或参数填 0 时使用这里的默认值。</p>
+            <div class="grid2">
+              <label>默认图像通道<select id="f-channel_id"></select></label>
+              <label>默认工作流（ComfyUI 通道）<select id="f-workflow_id"></select></label>
+              <label class="span2">默认预设（可多选，Ctrl / ⌘ 点选）
+                <select id="f-preset_ids" multiple size="5"></select>
+              </label>
+              <label>画册标题模板<input id="f-title_template" type="text" placeholder="{story} · {preset}" />
+                <small class="hint">变量：{story} {preset} {workflow} {channel} {date} {time}</small></label>
+              <label>并发幕数（0 = 跟随 Mio）<input id="f-concurrency" type="number" min="0" max="8" /></label>
+              <label>种子模式<select id="f-seed_mode"></select></label>
+              <label>固定种子<input id="f-seed" type="number" min="0" max="4294967295" /></label>
+            </div>
+            <div class="actions"><button class="btn primary" id="btn-save-defaults">保存默认值</button></div>
+          </div>
+          <div class="card">
+            <h2>Mio 资源一览</h2>
+            <div class="catalog" id="catalog"></div>
+          </div>
+        </section>
+
+        <!-- ================= export & delivery ================= -->
+        <section class="panel" data-panel="export">
+          <div class="card">
+            <h2>成品导出</h2>
+            <div class="grid2">
+              <label>默认导出格式<select id="f-format"></select></label>
+              <label>默认导出模板（HTML）<select id="f-layout_id"></select></label>
+              <label>图片处理档位<select id="f-image_profile"></select></label>
+              <label>主题色覆盖<input id="f-theme_color" type="text" placeholder="#C8553D（留空用模板默认）" /></label>
+              <label>署名<input id="f-signature" type="text" placeholder="出现在导出页脚" /></label>
+              <div class="checks">
+                <label class="check"><input type="checkbox" id="f-show_captions" /> HTML 显示分幕文案</label>
+                <label class="check"><input type="checkbox" id="f-show_prompts" /> HTML 显示提示词</label>
+              </div>
+            </div>
+            <div id="layout-preview" class="layout-preview"></div>
+          </div>
+          <div class="card">
+            <h2>完成通知策略</h2>
+            <div class="radios" id="notify-modes"></div>
+            <div class="grid2">
+              <label>图片发送方式<select id="f-send_mode"></select></label>
+              <label>单次最多发送图片数<input id="f-max_images" type="number" min="1" max="200" /></label>
+              <label>进度轮询间隔（秒）<input id="f-poll_interval" type="number" min="2" max="120" /></label>
+              <label class="check tall"><input type="checkbox" id="f-include_captions" /> 图片附带分幕文案</label>
+              <label>合并转发显示名<input id="f-forward_sender_name" type="text" /></label>
+              <label>合并转发显示 QQ 号<input id="f-forward_sender_uin" type="text" /></label>
+            </div>
+            <div class="actions"><button class="btn primary" id="btn-save-export">保存导出与通知</button></div>
+          </div>
+        </section>
+
+        <!-- ================= tasks ================= -->
+        <section class="panel" data-panel="tasks">
+          <div class="card">
+            <div class="card-head">
+              <h2>任务</h2>
+              <div class="inline">
+                <button class="btn ghost" id="btn-refresh-tasks">↻ 刷新</button>
+                <button class="btn" id="btn-new-task">＋ 新建任务</button>
+              </div>
+            </div>
+            <div id="new-task" class="new-task hidden">
+              <div class="grid2">
+                <label>分幕<select id="n-storyboard"></select></label>
+                <label>工作流<select id="n-workflow"></select></label>
+                <label>预设（多选）<select id="n-presets" multiple size="4"></select></label>
+                <label>通道<select id="n-channel"></select></label>
+                <label>标题（可选）<input id="n-title" type="text" /></label>
+                <label>完成后通知到会话（可选）<input id="n-umo" type="text" list="session-list" placeholder="留空则不通知" /></label>
+                <datalist id="session-list"></datalist>
+              </div>
+              <div class="actions"><button class="btn primary" id="btn-create-task">创建并开始</button></div>
+            </div>
+            <div id="tasks" class="tasks"></div>
+          </div>
+        </section>
+
+        <!-- ================= help ================= -->
+        <section class="panel" data-panel="help">
+          <div class="card">
+            <h2>聊天指令</h2>
+            <table class="cmds">
+              <tr><td><code>/mio_ls</code></td><td>列出工作流 / 分幕 / 预设（带编号）；<code>/mio_ls_wf</code> <code>/mio_ls_sb</code> <code>/mio_ls_ps</code> 单独列出，<code>/mio_ls_ch</code> 通道，<code>/mio_ls_tpl</code> 导出模板</td></tr>
+              <tr><td><code>/mio_use 1 2 3</code></td><td>用第 1 个工作流 + 第 2 个分幕 + 第 3 个预设创建任务并开始；预设可多选 <code>3,4</code>，第 4 个参数可选通道；<code>/mio_use 2</code> 只给分幕，其余用默认值</td></tr>
+              <tr><td><code>/mio_jobs</code></td><td>我的任务列表（编号 #）</td></tr>
+              <tr><td><code>/mio_status [#]</code></td><td>查看进度（默认最近一个）</td></tr>
+              <tr><td><code>/mio_get [#] [html|zip|pdf|img] [模板#]</code></td><td>导出并发送成品文件；<code>img</code> 直接发送每幕图片</td></tr>
+              <tr><td><code>/mio_pause # /mio_resume # /mio_cancel # /mio_rm #</code></td><td>暂停 / 继续（或重试失败任务）/ 停止 / 移除记录</td></tr>
+              <tr><td><code>/mio_ping</code></td><td>检查与 Mio 的连接</td></tr>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+    <div id="toasts" class="toasts"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>

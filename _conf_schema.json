@@ -1,0 +1,183 @@
+{
+  "mio": {
+    "description": "Mio · 绘页 连接",
+    "type": "object",
+    "hint": "本地部署的 comfy-comic-studio；需要先应用插件附带的 Mio 补丁（mio-patch/）并设置 MIO_API_TOKEN 启动。",
+    "items": {
+      "base_url": {
+        "description": "Mio 地址",
+        "type": "string",
+        "default": "http://127.0.0.1:8777",
+        "hint": "Mio 服务的根地址，不带 /api/v1"
+      },
+      "api_token": {
+        "description": "MIO_API_TOKEN",
+        "type": "string",
+        "default": "mio-comic-studio-token-0123456789abcdef",
+        "hint": "与启动 Mio 时的环境变量 MIO_API_TOKEN 一致，至少 32 个字符。已默认匹配 start.bat 预设令牌。"
+      },
+      "request_timeout": {
+        "description": "请求超时（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "普通 API 调用超时；导出文件时自动放宽到 300 秒以上"
+      }
+    }
+  },
+  "defaults": {
+    "description": "生成默认值（/mio_use 省略参数或填 0 时使用）",
+    "type": "object",
+    "items": {
+      "channel_id": {
+        "description": "默认图像通道 ID",
+        "type": "string",
+        "default": "",
+        "hint": "留空时优先使用 provider 为 comfyui 的通道。可在控制面板下拉选择，或用 /mio_ls_ch 查看"
+      },
+      "workflow_id": {
+        "description": "默认工作流 ID",
+        "type": "string",
+        "default": "",
+        "hint": "仅 ComfyUI 通道需要；留空取 Mio 中第一个工作流"
+      },
+      "preset_ids": {
+        "description": "默认预设 ID（逗号分隔）",
+        "type": "string",
+        "default": "",
+        "hint": "留空取 Mio 中第一个预设"
+      },
+      "title_template": {
+        "description": "画册标题模板",
+        "type": "string",
+        "default": "{story} · {preset}",
+        "hint": "可用变量：{story} {preset} {workflow} {channel} {date} {time}"
+      },
+      "seed_mode": {
+        "description": "种子模式",
+        "type": "string",
+        "default": "random",
+        "options": ["random", "fixed"],
+        "hint": "fixed 需要工作流里映射了种子节点"
+      },
+      "seed": {
+        "description": "固定种子",
+        "type": "int",
+        "default": 1
+      },
+      "concurrency": {
+        "description": "并发幕数",
+        "type": "int",
+        "default": 0,
+        "hint": "0 = 跟随 Mio 设置"
+      }
+    }
+  },
+  "export": {
+    "description": "成品导出默认值（/mio_get 与自动导出）",
+    "type": "object",
+    "items": {
+      "format": {
+        "description": "默认导出格式",
+        "type": "string",
+        "default": "html",
+        "options": ["html", "zip", "pdf"]
+      },
+      "layout_id": {
+        "description": "默认导出模板（Mio 版式 ID）",
+        "type": "string",
+        "default": "",
+        "hint": "留空取 Mio 中第一个模板；控制面板可下拉选择，/mio_ls_tpl 查看编号"
+      },
+      "image_profile": {
+        "description": "图片处理档位",
+        "type": "string",
+        "default": "auto",
+        "options": ["auto", "archive", "clean", "publish"],
+        "hint": "archive 原样；clean 去元数据；publish 压缩体积"
+      },
+      "show_captions": {
+        "description": "HTML 中显示分幕文案",
+        "type": "bool",
+        "default": true
+      },
+      "show_prompts": {
+        "description": "HTML 中显示提示词",
+        "type": "bool",
+        "default": false
+      },
+      "theme_color": {
+        "description": "主题色覆盖",
+        "type": "string",
+        "default": "",
+        "hint": "六位十六进制，如 #C8553D；留空使用模板默认"
+      },
+      "signature": {
+        "description": "署名",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
+  "delivery": {
+    "description": "完成通知与发送方式",
+    "type": "object",
+    "items": {
+      "notify_mode": {
+        "description": "任务完成后的通知策略",
+        "type": "string",
+        "default": "summary",
+        "options": ["images", "summary", "export", "silent"],
+        "hint": "images 自动发送每幕图片；summary 只发摘要（用 /mio_get 取件）；export 自动用默认模板导出并发送文件；silent 不通知"
+      },
+      "send_mode": {
+        "description": "图片发送方式",
+        "type": "string",
+        "default": "auto",
+        "options": ["auto", "forward", "separate", "batch"],
+        "hint": "auto：QQ 使用合并转发，其他平台分条发送"
+      },
+      "include_captions": {
+        "description": "图片附带分幕文案",
+        "type": "bool",
+        "default": true
+      },
+      "max_images": {
+        "description": "单次最多发送图片数",
+        "type": "int",
+        "default": 30
+      },
+      "poll_interval": {
+        "description": "进度轮询间隔（秒）",
+        "type": "int",
+        "default": 5
+      },
+      "forward_sender_name": {
+        "description": "合并转发显示名",
+        "type": "string",
+        "default": "Mio 绘页"
+      },
+      "forward_sender_uin": {
+        "description": "合并转发显示 QQ 号",
+        "type": "string",
+        "default": "10000"
+      }
+    }
+  },
+  "permissions": {
+    "description": "权限",
+    "type": "object",
+    "items": {
+      "admin_only": {
+        "description": "仅管理员可用",
+        "type": "bool",
+        "default": false
+      },
+      "allowed_sessions": {
+        "description": "允许的会话（unified_msg_origin 前缀）",
+        "type": "list",
+        "default": [],
+        "hint": "留空表示不限制；管理员不受限制"
+      }
+    }
+  }
+}
