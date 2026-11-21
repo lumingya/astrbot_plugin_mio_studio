@@ -25,7 +25,14 @@ import aiohttp
 class MioError(Exception):
     """Transport problem or an API-level error returned by Mio."""
 
-    def __init__(self, message: str, *, code: str = "mio_error", status: int = 0, request_id: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "mio_error",
+        status: int = 0,
+        request_id: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
@@ -36,7 +43,12 @@ class MioError(Exception):
         return self.message
 
     def to_dict(self) -> dict[str, Any]:
-        return {"code": self.code, "message": self.message, "status": self.status, "requestId": self.request_id}
+        return {
+            "code": self.code,
+            "message": self.message,
+            "status": self.status,
+            "requestId": self.request_id,
+        }
 
 
 def parse_data_url(data_url: str) -> tuple[bytes, str]:
@@ -69,7 +81,9 @@ def filename_from_disposition(value: str | None, fallback: str) -> str:
 class MioClient:
     """Small aiohttp based client for the Mio external API."""
 
-    def __init__(self, base_url: str = "http://127.0.0.1:8777", token: str = "", *, timeout: float = 60.0) -> None:
+    def __init__(
+        self, base_url: str = "http://127.0.0.1:8777", token: str = "", *, timeout: float = 60.0
+    ) -> None:
         self.base_url = (base_url or "http://127.0.0.1:8777").rstrip("/")
         self.token = (token or "").strip()
         self.timeout = float(timeout or 60.0)
@@ -81,7 +95,9 @@ class MioClient:
     def configured(self) -> bool:
         return bool(self.base_url)
 
-    def configure(self, base_url: str | None = None, token: str | None = None, timeout: float | None = None) -> None:
+    def configure(
+        self, base_url: str | None = None, token: str | None = None, timeout: float | None = None
+    ) -> None:
         if base_url is not None:
             self.base_url = (base_url or "http://127.0.0.1:8777").rstrip("/")
         if token is not None:
@@ -113,20 +129,46 @@ class MioClient:
         err = payload.get("error") if isinstance(payload, dict) else None
         request_id = payload.get("requestId") if isinstance(payload, dict) else None
         if isinstance(err, dict):
-            return MioError(str(err.get("message") or f"HTTP {status}"), code=str(err.get("code") or f"http_{status}"), status=status, request_id=request_id)
+            return MioError(
+                str(err.get("message") or f"HTTP {status}"),
+                code=str(err.get("code") or f"http_{status}"),
+                status=status,
+                request_id=request_id,
+            )
         if isinstance(err, str) and err:
-            code = payload.get("code") if isinstance(payload, dict) and isinstance(payload.get("code"), str) else f"http_{status}"
+            code = (
+                payload.get("code")
+                if isinstance(payload, dict) and isinstance(payload.get("code"), str)
+                else f"http_{status}"
+            )
             return MioError(err, code=code, status=status, request_id=request_id)
         text = raw.decode("utf-8", "replace")[:300]
-        return MioError(f"HTTP {status}: {text or reason or ''}".strip(), code=f"http_{status}", status=status)
+        return MioError(
+            f"HTTP {status}: {text or reason or ''}".strip(), code=f"http_{status}", status=status
+        )
 
-    async def request_raw(self, method: str, path: str, *, params: dict[str, Any] | None = None, json_body: Any | None = None, timeout: float | None = None) -> tuple[bytes, dict[str, str]]:
+    async def request_raw(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: Any | None = None,
+        timeout: float | None = None,
+    ) -> tuple[bytes, dict[str, str]]:
         session = await self._get_session()
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         query = {k: str(v) for k, v in (params or {}).items() if v is not None} or None
         req_timeout = aiohttp.ClientTimeout(total=timeout or self.timeout)
         try:
-            async with session.request(method.upper(), self._url(path), params=query, json=json_body, headers=headers, timeout=req_timeout) as resp:
+            async with session.request(
+                method.upper(),
+                self._url(path),
+                params=query,
+                json=json_body,
+                headers=headers,
+                timeout=req_timeout,
+            ) as resp:
                 raw = await resp.read()
                 if resp.status >= 400:
                     payload: Any = None
@@ -145,9 +187,19 @@ class MioClient:
         except aiohttp.ClientError as exc:
             raise MioError(f"与 Mio 通信失败：{exc}", code="transport") from exc
 
-    async def request(self, method: str, path: str, *, params: dict[str, Any] | None = None, json_body: Any | None = None, timeout: float | None = None) -> Any:
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: Any | None = None,
+        timeout: float | None = None,
+    ) -> Any:
         """Perform a request and return the unwrapped ``data`` payload."""
-        raw, _ = await self.request_raw(method, path, params=params, json_body=json_body, timeout=timeout)
+        raw, _ = await self.request_raw(
+            method, path, params=params, json_body=json_body, timeout=timeout
+        )
         if not raw:
             return None
         try:
@@ -162,7 +214,9 @@ class MioClient:
         return await self.request("GET", path, params=params or None)
 
     async def post(self, path: str, body: Any = None, *, timeout: float | None = None) -> Any:
-        return await self.request("POST", path, json_body=body if body is not None else {}, timeout=timeout)
+        return await self.request(
+            "POST", path, json_body=body if body is not None else {}, timeout=timeout
+        )
 
     # -------------------------------------------------------------- discovery
     async def health(self) -> dict[str, Any]:
@@ -196,7 +250,16 @@ class MioClient:
         data = await self.request("GET", "/assets", params={"path": asset_path})
         return parse_data_url((data or {}).get("dataUrl", ""))
 
-    async def export_album(self, album_ids: list[str], fmt: str = "html", *, layout_id: str | None = None, image_profile: str | None = None, options: dict[str, Any] | None = None, timeout: float | None = None) -> tuple[bytes, str, str]:
+    async def export_album(
+        self,
+        album_ids: list[str],
+        fmt: str = "html",
+        *,
+        layout_id: str | None = None,
+        image_profile: str | None = None,
+        options: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> tuple[bytes, str, str]:
         """Server-side export; returns ``(bytes, filename, content_type)``."""
         body: dict[str, Any] = {"albumIds": list(album_ids), "format": fmt}
         if layout_id:
@@ -206,7 +269,9 @@ class MioClient:
         for key, value in (options or {}).items():
             if value not in (None, ""):
                 body[key] = value
-        raw, headers = await self.request_raw("POST", "/albums/export", json_body=body, timeout=timeout or max(self.timeout, 300))
+        raw, headers = await self.request_raw(
+            "POST", "/albums/export", json_body=body, timeout=timeout or max(self.timeout, 300)
+        )
         ext = {"html": ".html", "zip": ".zip", "pdf": ".pdf"}.get(fmt, "")
         name = filename_from_disposition(headers.get("Content-Disposition"), f"album{ext}")
         return raw, name, headers.get("Content-Type", "application/octet-stream")
@@ -225,7 +290,21 @@ class MioClient:
     async def production(self, action: str, body: dict[str, Any] | None = None) -> Any:
         return await self.post(f"/production/{action}", body or {})
 
-    async def assemble(self, *, story_id: str, presets: list[dict[str, str]], channel_id: str, workflow_id: str | None, title: str, request_id: str, seed: int | None = None, seed_enabled: bool = False, concurrency: int | None = None, overrides: dict[str, Any] | None = None, project_id: str | None = None) -> dict[str, Any]:
+    async def assemble(
+        self,
+        *,
+        story_id: str,
+        presets: list[dict[str, str]],
+        channel_id: str,
+        workflow_id: str | None,
+        title: str,
+        request_id: str,
+        seed: int | None = None,
+        seed_enabled: bool = False,
+        concurrency: int | None = None,
+        overrides: dict[str, Any] | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "storyId": story_id,
             "presets": presets,
@@ -245,7 +324,14 @@ class MioClient:
             body["projectId"] = project_id
         return await self.production("assemble", body)
 
-    async def start_task(self, task_id: str, *, concurrency: int | None = None, indices: list[int] | None = None, force_prepare: bool = False) -> Any:
+    async def start_task(
+        self,
+        task_id: str,
+        *,
+        concurrency: int | None = None,
+        indices: list[int] | None = None,
+        force_prepare: bool = False,
+    ) -> Any:
         body: dict[str, Any] = {"id": task_id, "trusted": True, "confirmUncertain": True}
         if concurrency:
             body["concurrency"] = int(concurrency)

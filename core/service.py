@@ -18,12 +18,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from astrbot.api.event import MessageChain
 import astrbot.api.message_components as Comp
+from astrbot.api.event import MessageChain
 
 from .mio_client import MioClient, MioError
 from .store import TaskStore
-from .textfmt import STATUS_LABEL, format_task, progress_of, status_key
+from .textfmt import format_task, progress_of, status_key
 
 NOTIFY_MODES = ("images", "summary", "export", "silent")
 FORMATS = ("html", "zip", "pdf")
@@ -82,7 +82,9 @@ class MioStudioService:
 
     def reload_config(self) -> None:
         self.client.configure(
-            base_url=str(self.cfg("mio", "base_url", "http://127.0.0.1:8777") or "http://127.0.0.1:8777"),
+            base_url=str(
+                self.cfg("mio", "base_url", "http://127.0.0.1:8777") or "http://127.0.0.1:8777"
+            ),
             token=str(self.cfg("mio", "api_token", "") or ""),
             timeout=float(_int(self.cfg("mio", "request_timeout", 60), 60, 5, 600)),
         )
@@ -93,14 +95,19 @@ class MioStudioService:
             "mio": {
                 "base_url": self.client.base_url,
                 "api_token_set": bool(token),
-                "api_token_masked": (token[:4] + "…" + token[-4:]) if len(token) >= 12 else ("已设置" if token else ""),
+                "api_token_masked": (token[:4] + "…" + token[-4:])
+                if len(token) >= 12
+                else ("已设置" if token else ""),
                 "request_timeout": _int(self.cfg("mio", "request_timeout", 60), 60, 5, 600),
             },
             "defaults": {
                 "channel_id": str(self.cfg("defaults", "channel_id", "") or ""),
                 "workflow_id": str(self.cfg("defaults", "workflow_id", "") or ""),
                 "preset_ids": self.default_preset_ids(),
-                "title_template": str(self.cfg("defaults", "title_template", "{story} · {preset}") or "{story} · {preset}"),
+                "title_template": str(
+                    self.cfg("defaults", "title_template", "{story} · {preset}")
+                    or "{story} · {preset}"
+                ),
                 "seed_mode": str(self.cfg("defaults", "seed_mode", "random") or "random"),
                 "seed": _int(self.cfg("defaults", "seed", 1), 1, 0, 2**32 - 1),
                 "concurrency": _int(self.cfg("defaults", "concurrency", 0), 0, 0, 8),
@@ -120,8 +127,12 @@ class MioStudioService:
                 "include_captions": bool(self.cfg("delivery", "include_captions", True)),
                 "max_images": _int(self.cfg("delivery", "max_images", 30), 30, 1, 200),
                 "poll_interval": _int(self.cfg("delivery", "poll_interval", 5), 5, 2, 120),
-                "forward_sender_name": str(self.cfg("delivery", "forward_sender_name", "Mio 绘页") or "Mio 绘页"),
-                "forward_sender_uin": str(self.cfg("delivery", "forward_sender_uin", "10000") or "10000"),
+                "forward_sender_name": str(
+                    self.cfg("delivery", "forward_sender_name", "Mio 绘页") or "Mio 绘页"
+                ),
+                "forward_sender_uin": str(
+                    self.cfg("delivery", "forward_sender_uin", "10000") or "10000"
+                ),
             },
             "permissions": {
                 "admin_only": bool(self.cfg("permissions", "admin_only", False)),
@@ -131,9 +142,33 @@ class MioStudioService:
 
     ALLOWED_KEYS = {
         "mio": {"base_url": str, "api_token": str, "request_timeout": int},
-        "defaults": {"channel_id": str, "workflow_id": str, "preset_ids": str, "title_template": str, "seed_mode": str, "seed": int, "concurrency": int},
-        "export": {"layout_id": str, "format": str, "image_profile": str, "show_captions": bool, "show_prompts": bool, "theme_color": str, "signature": str},
-        "delivery": {"notify_mode": str, "send_mode": str, "include_captions": bool, "max_images": int, "poll_interval": int, "forward_sender_name": str, "forward_sender_uin": str},
+        "defaults": {
+            "channel_id": str,
+            "workflow_id": str,
+            "preset_ids": str,
+            "title_template": str,
+            "seed_mode": str,
+            "seed": int,
+            "concurrency": int,
+        },
+        "export": {
+            "layout_id": str,
+            "format": str,
+            "image_profile": str,
+            "show_captions": bool,
+            "show_prompts": bool,
+            "theme_color": str,
+            "signature": str,
+        },
+        "delivery": {
+            "notify_mode": str,
+            "send_mode": str,
+            "include_captions": bool,
+            "max_images": int,
+            "poll_interval": int,
+            "forward_sender_name": str,
+            "forward_sender_uin": str,
+        },
         "permissions": {"admin_only": bool, "allowed_sessions": list},
     }
 
@@ -220,14 +255,23 @@ class MioStudioService:
             return True
         if bool(self.cfg("permissions", "admin_only", False)):
             return False
-        allowed = [str(v) for v in (self.cfg("permissions", "allowed_sessions", []) or []) if str(v).strip()]
+        allowed = [
+            str(v)
+            for v in (self.cfg("permissions", "allowed_sessions", []) or [])
+            if str(v).strip()
+        ]
         if not allowed:
             return True
         return any(umo == a or umo.startswith(a) for a in allowed)
 
     # ------------------------------------------------------------------ status
     async def status(self) -> dict[str, Any]:
-        info: dict[str, Any] = {"configured": self.client.configured, "baseUrl": self.client.base_url, "ok": False, "patched": False}
+        info: dict[str, Any] = {
+            "configured": self.client.configured,
+            "baseUrl": self.client.base_url,
+            "ok": False,
+            "patched": False,
+        }
         if not self.client.configured:
             info["error"] = "尚未配置 Mio 服务地址"
             return info
@@ -235,15 +279,35 @@ class MioStudioService:
             health = await self.client.health()
             info.update({"ok": True, "version": health.get("version"), "health": health})
             caps = await self.client.capabilities()
-            info["patched"] = bool(caps.get("productionQueue")) and "html" in (caps.get("albumExportFormats") or [])
-            info["capabilities"] = {k: caps.get(k) for k in ("version", "catalog", "albumExportFormats", "productionQueue", "operations")}
+            info["patched"] = bool(caps.get("productionQueue")) and "html" in (
+                caps.get("albumExportFormats") or []
+            )
+            info["capabilities"] = {
+                k: caps.get(k)
+                for k in (
+                    "version",
+                    "catalog",
+                    "albumExportFormats",
+                    "productionQueue",
+                    "operations",
+                )
+            }
             if not info["patched"]:
-                info["error"] = "Mio 未应用配套补丁（缺少 catalog / albums/export / production 路由）"
+                info["error"] = (
+                    "Mio 未应用配套补丁（缺少 catalog / albums/export / production 路由）"
+                )
         except MioError as exc:
             info["error"] = exc.message
             info["errorCode"] = exc.code
         tasks = self.store.all()
-        info["tasks"] = {"total": len(tasks), "active": sum(1 for t in tasks if t.get("status") not in FINAL_STATES and t.get("status") != "missing")}
+        info["tasks"] = {
+            "total": len(tasks),
+            "active": sum(
+                1
+                for t in tasks
+                if t.get("status") not in FINAL_STATES and t.get("status") != "missing"
+            ),
+        }
         info["poller"] = bool(self._poller and not self._poller.done())
         return info
 
@@ -253,7 +317,17 @@ class MioStudioService:
             if not force and self._catalog and time.monotonic() - self._catalog_at < CATALOG_TTL:
                 return self._catalog
             data = await self.client.catalog()
-            cat = {k: list(data.get(k) or []) for k in ("workflows", "storyboards", "presets", "layouts", "channels", "collections")}
+            cat = {
+                k: list(data.get(k) or [])
+                for k in (
+                    "workflows",
+                    "storyboards",
+                    "presets",
+                    "layouts",
+                    "channels",
+                    "collections",
+                )
+            }
             cat["fetchedAt"] = time.time()
             self._catalog = cat
             self._catalog_at = time.monotonic()
@@ -286,19 +360,29 @@ class MioStudioService:
             return matches[0]
         raise ServiceError(f"找不到{label}「{text}」，请用 /mio ls 查看编号")
 
-    def _default_item(self, items: list[dict[str, Any]], configured: str, label: str, *, required: bool) -> dict[str, Any] | None:
+    def _default_item(
+        self, items: list[dict[str, Any]], configured: str, label: str, *, required: bool
+    ) -> dict[str, Any] | None:
         if configured:
             for item in items:
                 if item.get("id") == configured:
                     return item
-            raise ServiceError(f"面板里配置的默认{label}（{configured}）在 Mio 中不存在，请重新选择")
+            raise ServiceError(
+                f"面板里配置的默认{label}（{configured}）在 Mio 中不存在，请重新选择"
+            )
         if items and required:
             return items[0]
         if required:
             raise ServiceError(f"Mio 中没有可用的{label}")
         return None
 
-    async def resolve_selection(self, workflow: str | None, storyboard: str | None, presets: list[str] | None, channel: str | None) -> dict[str, Any]:
+    async def resolve_selection(
+        self,
+        workflow: str | None,
+        storyboard: str | None,
+        presets: list[str] | None,
+        channel: str | None,
+    ) -> dict[str, Any]:
         """Turn user tokens (numbers / ids / '0' for default) into concrete Mio resources."""
         cat = await self.catalog(force=True)
         channels = cat["channels"]
@@ -310,13 +394,20 @@ class MioStudioService:
             if not configured:
                 comfy = [c for c in channels if c.get("provider") == "comfyui"]
                 channel_item = comfy[0] if comfy else channel_item
-        uses_workflow = channel_item.get("provider") == "comfyui" or channel_item.get("usesWorkflow") is True
+        uses_workflow = (
+            channel_item.get("provider") == "comfyui" or channel_item.get("usesWorkflow") is True
+        )
         workflow_item = None
         if uses_workflow:
             if workflow and workflow != "0":
                 workflow_item = self.pick(cat["workflows"], workflow, label="工作流")
             else:
-                workflow_item = self._default_item(cat["workflows"], str(self.cfg("defaults", "workflow_id", "") or ""), "工作流", required=True)
+                workflow_item = self._default_item(
+                    cat["workflows"],
+                    str(self.cfg("defaults", "workflow_id", "") or ""),
+                    "工作流",
+                    required=True,
+                )
         story_item = self.pick(cat["storyboards"], storyboard, label="分幕")
         preset_items: list[dict[str, Any]] = []
         tokens = [t for t in (presets or []) if t not in ("", "0")]
@@ -337,23 +428,47 @@ class MioStudioService:
             raise ServiceError("Mio 中没有可用的预设（角色 / 场景变量集）")
         if len(preset_items) > 20:
             raise ServiceError("一次最多选择 20 个预设")
-        return {"channel": channel_item, "workflow": workflow_item, "storyboard": story_item, "presets": preset_items}
+        return {
+            "channel": channel_item,
+            "workflow": workflow_item,
+            "storyboard": story_item,
+            "presets": preset_items,
+        }
 
     # ------------------------------------------------------------------ tasks
     def _title_for(self, selection: dict[str, Any]) -> str:
-        template = str(self.cfg("defaults", "title_template", "{story} · {preset}") or "{story} · {preset}")
+        template = str(
+            self.cfg("defaults", "title_template", "{story} · {preset}") or "{story} · {preset}"
+        )
         story = selection["storyboard"].get("title") or "画册"
         preset = " + ".join(str(p.get("title") or p.get("id")) for p in selection["presets"])
         workflow = (selection.get("workflow") or {}).get("title") or ""
         channel = selection["channel"].get("title") or selection["channel"].get("id") or ""
         try:
-            title = template.format(story=story, preset=preset, workflow=workflow, channel=channel, date=time.strftime("%m-%d"), time=time.strftime("%H:%M"))
+            title = template.format(
+                story=story,
+                preset=preset,
+                workflow=workflow,
+                channel=channel,
+                date=time.strftime("%m-%d"),
+                time=time.strftime("%H:%M"),
+            )
         except (KeyError, IndexError, ValueError):
             title = f"{story} · {preset}"
         title = re.sub(r"\s+", " ", title).strip(" ·")
         return (title or story)[:120]
 
-    async def create_task(self, selection: dict[str, Any], *, umo: str, sender_id: str = "", sender_name: str = "", platform: str = "", title: str | None = None, start: bool = True) -> dict[str, Any]:
+    async def create_task(
+        self,
+        selection: dict[str, Any],
+        *,
+        umo: str,
+        sender_id: str = "",
+        sender_name: str = "",
+        platform: str = "",
+        title: str | None = None,
+        start: bool = True,
+    ) -> dict[str, Any]:
         seed_mode = str(self.cfg("defaults", "seed_mode", "random") or "random")
         seed = _int(self.cfg("defaults", "seed", 1), 1, 0, 2**32 - 1)
         concurrency = _int(self.cfg("defaults", "concurrency", 0), 0, 0, 8) or None
@@ -363,7 +478,10 @@ class MioStudioService:
         try:
             task = await self.client.assemble(
                 story_id=selection["storyboard"]["id"],
-                presets=[{"kind": p.get("category") or "characters", "id": p["id"]} for p in selection["presets"]],
+                presets=[
+                    {"kind": p.get("category") or "characters", "id": p["id"]}
+                    for p in selection["presets"]
+                ],
                 channel_id=selection["channel"]["id"],
                 workflow_id=workflow["id"] if workflow else None,
                 title=title,
@@ -373,7 +491,9 @@ class MioStudioService:
                 concurrency=concurrency,
             )
         except MioError as exc:
-            raise ServiceError(f"Mio 装配失败：{exc.message}", code=exc.code, status=exc.status or 502)
+            raise ServiceError(
+                f"Mio 装配失败：{exc.message}", code=exc.code, status=exc.status or 502
+            )
         if not isinstance(task, dict) or not task.get("id"):
             raise ServiceError("Mio 未返回任务信息", code="bad_response", status=502)
         record = self.store.add(
@@ -393,9 +513,12 @@ class MioStudioService:
                     "storyboardId": selection["storyboard"]["id"],
                     "storyboardTitle": selection["storyboard"].get("title"),
                     "presetIds": [p["id"] for p in selection["presets"]],
-                    "presetTitles": [str(p.get("title") or p.get("id")) for p in selection["presets"]],
+                    "presetTitles": [
+                        str(p.get("title") or p.get("id")) for p in selection["presets"]
+                    ],
                     "channelId": selection["channel"]["id"],
-                    "channelTitle": selection["channel"].get("title") or selection["channel"].get("id"),
+                    "channelTitle": selection["channel"].get("title")
+                    or selection["channel"].get("id"),
                 },
             }
         )
@@ -405,7 +528,11 @@ class MioStudioService:
                 record = self.store.update(task["id"], status="ready") or record
             except MioError as exc:
                 self.store.update(task["id"], status="standby", error=exc.message)
-                raise ServiceError(f"任务 #{record['num']} 已创建但启动失败：{exc.message}（可用 /mio resume {record['num']} 重试）", code=exc.code, status=exc.status or 502)
+                raise ServiceError(
+                    f"任务 #{record['num']} 已创建但启动失败：{exc.message}（可用 /mio resume {record['num']} 重试）",
+                    code=exc.code,
+                    status=exc.status or 502,
+                )
         self._tasks_at = 0.0
         self.ensure_poller()
         return record
@@ -419,8 +546,23 @@ class MioStudioService:
 
     def merge_view(self, record: dict[str, Any], live: dict[str, Any] | None) -> dict[str, Any]:
         done, failed, total = progress_of(live)
-        key = status_key(live) if live is not None else ("missing" if record.get("status") == "missing" else str(record.get("status") or "unknown"))
-        view = {**record, "live": bool(live), "statusKey": key, "done": done, "failed": failed, "total": total}
+        key = (
+            status_key(live)
+            if live is not None
+            else (
+                "missing"
+                if record.get("status") == "missing"
+                else str(record.get("status") or "unknown")
+            )
+        )
+        view = {
+            **record,
+            "live": bool(live),
+            "statusKey": key,
+            "done": done,
+            "failed": failed,
+            "total": total,
+        }
         if live:
             view["albumId"] = live.get("albumId") or record.get("albumId")
             report = live.get("cancelReport") if isinstance(live.get("cancelReport"), dict) else {}
@@ -431,7 +573,9 @@ class MioStudioService:
             view["error"] = record.get("error")
         return view
 
-    async def task_views(self, *, umo: str | None = None, limit: int = 10, force: bool = False) -> tuple[list[dict[str, Any]], int]:
+    async def task_views(
+        self, *, umo: str | None = None, limit: int = 10, force: bool = False
+    ) -> tuple[list[dict[str, Any]], int]:
         records = self.store.all()
         if umo:
             records = [r for r in records if r.get("umo") == umo]
@@ -442,7 +586,9 @@ class MioStudioService:
             live = None
         views = []
         for record in records:
-            views.append(self.merge_view(record, live.get(record["id"]) if live is not None else None))
+            views.append(
+                self.merge_view(record, live.get(record["id"]) if live is not None else None)
+            )
         others = 0
         if live is not None:
             mine = {r.get("id") for r in self.store.all()}
@@ -461,10 +607,15 @@ class MioStudioService:
                     self.store.update(record["id"], status="missing")
                     record = {**record, "status": "missing"}
             else:
-                raise ServiceError(f"读取任务失败：{exc.message}", code=exc.code, status=exc.status or 502)
+                raise ServiceError(
+                    f"读取任务失败：{exc.message}", code=exc.code, status=exc.status or 502
+                )
         if live is not None:
             try:
-                entry = next((t for t in await self.mio_tasks(force=force) if t.get("id") == record["id"]), None)
+                entry = next(
+                    (t for t in await self.mio_tasks(force=force) if t.get("id") == record["id"]),
+                    None,
+                )
             except MioError:
                 entry = None
             if entry:
@@ -516,7 +667,9 @@ class MioStudioService:
                 return f"⏹ 任务 #{num} 已停止（已生成的分幕保留，可 /mio resume {num} 补跑）"
             if action == "remove":
                 try:
-                    await self.client.production("remove", {"id": record["id"], "deleteAlbums": False})
+                    await self.client.production(
+                        "remove", {"id": record["id"], "deleteAlbums": False}
+                    )
                 except MioError as exc:
                     if exc.status != 404:
                         raise
@@ -533,7 +686,9 @@ class MioStudioService:
         return path
 
     def _prune_exports(self) -> None:
-        files = sorted(self._export_dir().glob("*"), key=lambda p: p.stat().st_mtime if p.exists() else 0)
+        files = sorted(
+            self._export_dir().glob("*"), key=lambda p: p.stat().st_mtime if p.exists() else 0
+        )
         for stale in files[:-MAX_EXPORT_FILES]:
             try:
                 stale.unlink()
@@ -550,10 +705,14 @@ class MioStudioService:
             for item in layouts:
                 if item.get("id") == configured:
                     return item
-            self.logger.warning(f"[mio_studio] 默认导出模板 {configured} 不存在，改用 Mio 第一个模板")
+            self.logger.warning(
+                f"[mio_studio] 默认导出模板 {configured} 不存在，改用 Mio 第一个模板"
+            )
         return layouts[0] if layouts else None
 
-    async def export(self, record: dict[str, Any], *, fmt: str | None = None, layout: str | None = None) -> dict[str, Any]:
+    async def export(
+        self, record: dict[str, Any], *, fmt: str | None = None, layout: str | None = None
+    ) -> dict[str, Any]:
         album_id = record.get("albumId")
         if not album_id:
             raise ServiceError("该任务还没有关联画册")
@@ -563,7 +722,11 @@ class MioStudioService:
         layout_item = await self.resolve_layout(layout) if fmt == "html" else None
         try:
             data, filename, content_type = await self.client.export_album(
-                [album_id], fmt, layout_id=layout_item.get("id") if layout_item else None, image_profile=self.image_profile() if self.image_profile() != "auto" else None, options=self.export_options() if fmt == "html" else None
+                [album_id],
+                fmt,
+                layout_id=layout_item.get("id") if layout_item else None,
+                image_profile=self.image_profile() if self.image_profile() != "auto" else None,
+                options=self.export_options() if fmt == "html" else None,
             )
         except MioError as exc:
             raise ServiceError(f"导出失败：{exc.message}", code=exc.code, status=exc.status or 502)
@@ -573,21 +736,38 @@ class MioStudioService:
         path = self._export_dir() / f"{record['num']:04d}-{filename}"
         path.write_bytes(data)
         self._prune_exports()
-        return {"path": path, "filename": filename, "contentType": content_type, "size": len(data), "layout": layout_item, "format": fmt}
+        return {
+            "path": path,
+            "filename": filename,
+            "contentType": content_type,
+            "size": len(data),
+            "layout": layout_item,
+            "format": fmt,
+        }
 
     async def frames(self, album_id: str, *, limit: int | None = None) -> dict[str, Any]:
         """Download (and cache) the frame images of an album."""
         try:
             album = await self.client.album(album_id)
         except MioError as exc:
-            raise ServiceError(f"读取画册失败：{exc.message}", code=exc.code, status=exc.status or 502)
+            raise ServiceError(
+                f"读取画册失败：{exc.message}", code=exc.code, status=exc.status or 502
+            )
         cache = self.data_dir / "cache" / re.sub(r"[^A-Za-z0-9_.-]", "_", album_id)
         cache.mkdir(parents=True, exist_ok=True)
         out = []
-        steps = sorted((s for s in album.get("steps", []) if isinstance(s, dict)), key=lambda s: s.get("stepIndex", 0))
+        steps = sorted(
+            (s for s in album.get("steps", []) if isinstance(s, dict)),
+            key=lambda s: s.get("stepIndex", 0),
+        )
         for step in steps[: limit or None]:
             image = step.get("image") or ""
-            entry = {"index": step.get("stepIndex", len(out)), "name": step.get("name", ""), "caption": step.get("caption", ""), "path": None}
+            entry = {
+                "index": step.get("stepIndex", len(out)),
+                "name": step.get("name", ""),
+                "caption": step.get("caption", ""),
+                "path": None,
+            }
             if image:
                 digest = hashlib.sha1(image.encode("utf-8")).hexdigest()[:16]
                 existing = next(cache.glob(f"{digest}.*"), None)
@@ -598,7 +778,12 @@ class MioStudioService:
                         self.logger.warning(f"[mio_studio] 下载分幕图片失败 {image}: {exc.message}")
                         data, mime = b"", ""
                     if data:
-                        ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}.get(mime, "png")
+                        ext = {
+                            "image/png": "png",
+                            "image/jpeg": "jpg",
+                            "image/webp": "webp",
+                            "image/gif": "gif",
+                        }.get(mime, "png")
                         existing = cache / f"{digest}.{ext}"
                         existing.write_bytes(data)
                 entry["path"] = existing
@@ -616,17 +801,32 @@ class MioStudioService:
     async def send_text(self, umo: str, text: str) -> bool:
         return await self.send(umo, MessageChain(chain=[Comp.Plain(text)]))
 
-    async def send_export(self, record: dict[str, Any], umo: str, *, fmt: str | None = None, layout: str | None = None, note: str = "") -> dict[str, Any]:
+    async def send_export(
+        self,
+        record: dict[str, Any],
+        umo: str,
+        *,
+        fmt: str | None = None,
+        layout: str | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
         result = await self.export(record, fmt=fmt, layout=layout)
         layout_name = (result.get("layout") or {}).get("title") if result.get("layout") else None
-        text = note or f"📦 任务 #{record['num']}《{record.get('title')}》导出完成：{result['filename']}（{result['size'] / 1024:.0f} KB"
+        text = (
+            note
+            or f"📦 任务 #{record['num']}《{record.get('title')}》导出完成：{result['filename']}（{result['size'] / 1024:.0f} KB"
+        )
         if not note:
             text += f"，模板 {layout_name}）" if layout_name else "）"
         await self.send(umo, MessageChain(chain=[Comp.Plain(text)]))
-        await self.send(umo, MessageChain(chain=[Comp.File(name=result["filename"], file=str(result["path"]))]))
+        await self.send(
+            umo, MessageChain(chain=[Comp.File(name=result["filename"], file=str(result["path"]))])
+        )
         return result
 
-    async def send_images(self, record: dict[str, Any], umo: str, *, platform: str = "", header: str = "") -> int:
+    async def send_images(
+        self, record: dict[str, Any], umo: str, *, platform: str = "", header: str = ""
+    ) -> int:
         album_id = record.get("albumId")
         if not album_id:
             raise ServiceError("该任务还没有关联画册")
@@ -635,13 +835,22 @@ class MioStudioService:
         frames = [f for f in bundle["frames"] if f.get("path")]
         album = bundle["album"]
         include_captions = bool(self.cfg("delivery", "include_captions", True))
-        header = header or f"🖼 任务 #{record['num']}《{album.get('title') or record.get('title')}》 {len(frames)} 幕"
+        header = (
+            header
+            or f"🖼 任务 #{record['num']}《{album.get('title') or record.get('title')}》 {len(frames)} 幕"
+        )
         if not frames:
             await self.send_text(umo, header + "\n（还没有可发送的图片）")
             return 0
         send_mode = str(self.cfg("delivery", "send_mode", "auto") or "auto")
-        platform = platform or str(record.get("platform") or "") or (umo.split(":", 1)[0] if ":" in umo else "")
-        use_forward = send_mode == "forward" or (send_mode == "auto" and platform in FORWARD_PLATFORMS and len(frames) > 1)
+        platform = (
+            platform
+            or str(record.get("platform") or "")
+            or (umo.split(":", 1)[0] if ":" in umo else "")
+        )
+        use_forward = send_mode == "forward" or (
+            send_mode == "auto" and platform in FORWARD_PLATFORMS and len(frames) > 1
+        )
 
         def caption(frame: dict[str, Any]) -> str:
             text = f"第 {int(frame['index']) + 1} 幕"
@@ -656,10 +865,21 @@ class MioStudioService:
             uin = str(self.cfg("delivery", "forward_sender_uin", "10000") or "10000")
             nodes = [Comp.Node(uin=uin, name=name, content=[Comp.Plain(header)])]
             for frame in frames:
-                nodes.append(Comp.Node(uin=uin, name=name, content=[Comp.Plain(caption(frame)), Comp.Image.fromFileSystem(str(frame["path"]))]))
+                nodes.append(
+                    Comp.Node(
+                        uin=uin,
+                        name=name,
+                        content=[
+                            Comp.Plain(caption(frame)),
+                            Comp.Image.fromFileSystem(str(frame["path"])),
+                        ],
+                    )
+                )
             if await self.send(umo, MessageChain(chain=[Comp.Nodes(nodes=nodes)])):
                 return len(frames)
-            self.logger.warning("[mio_studio] forward message failed, falling back to separate messages")
+            self.logger.warning(
+                "[mio_studio] forward message failed, falling back to separate messages"
+            )
         await self.send_text(umo, header)
         if send_mode == "batch" or (send_mode == "auto" and not use_forward and len(frames) <= 4):
             content: list = []
@@ -669,7 +889,15 @@ class MioStudioService:
             await self.send(umo, MessageChain(chain=content))
             return len(frames)
         for frame in frames:
-            await self.send(umo, MessageChain(chain=[Comp.Plain(caption(frame) + "\n"), Comp.Image.fromFileSystem(str(frame["path"]))]))
+            await self.send(
+                umo,
+                MessageChain(
+                    chain=[
+                        Comp.Plain(caption(frame) + "\n"),
+                        Comp.Image.fromFileSystem(str(frame["path"])),
+                    ]
+                ),
+            )
             await asyncio.sleep(0.3)
         return len(frames)
 
@@ -688,7 +916,9 @@ class MioStudioService:
         if mode == "silent":
             return
         if mode == "summary":
-            await self.send_text(umo, summary + f"\n下载：/mio get {num} [html|zip|pdf|img] [模板#]")
+            await self.send_text(
+                umo, summary + f"\n下载：/mio get {num} [html|zip|pdf|img] [模板#]"
+            )
             return
         if mode == "images":
             try:
@@ -700,7 +930,9 @@ class MioStudioService:
             try:
                 await self.send_export(record, umo)
             except ServiceError as exc:
-                await self.send_text(umo, summary + f"\n（自动导出失败：{exc.message}，可用 /mio get {num} 重试）")
+                await self.send_text(
+                    umo, summary + f"\n（自动导出失败：{exc.message}，可用 /mio get {num} 重试）"
+                )
 
     # ----------------------------------------------------------------- poller
     def ensure_poller(self) -> None:
@@ -714,7 +946,9 @@ class MioStudioService:
             self._poller = loop.create_task(self._poll_loop())
 
     def _pending_records(self) -> list[dict[str, Any]]:
-        return [r for r in self.store.all() if not r.get("notified") and r.get("status") != "missing"]
+        return [
+            r for r in self.store.all() if not r.get("notified") and r.get("status") != "missing"
+        ]
 
     async def _poll_loop(self) -> None:
         idle_rounds = 0
@@ -764,7 +998,9 @@ class MioStudioService:
                 try:
                     await self.notify_finished({**record, **changes}, view)
                 except Exception as exc:  # pragma: no cover - defensive
-                    self.logger.warning(f"[mio_studio] notify failed for #{record.get('num')}: {exc}")
+                    self.logger.warning(
+                        f"[mio_studio] notify failed for #{record.get('num')}: {exc}"
+                    )
 
     async def close(self) -> None:
         self._closing = True

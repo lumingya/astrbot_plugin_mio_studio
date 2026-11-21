@@ -33,7 +33,10 @@ class TaskStore:
         except Exception:
             return
         if isinstance(raw, dict) and isinstance(raw.get("tasks"), list):
-            self._data = {"seq": int(raw.get("seq") or 0), "tasks": [t for t in raw["tasks"] if isinstance(t, dict)]}
+            self._data = {
+                "seq": int(raw.get("seq") or 0),
+                "tasks": [t for t in raw["tasks"] if isinstance(t, dict)],
+            }
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,14 +84,23 @@ class TaskStore:
             for t in reversed(self._data["tasks"]):
                 umo = t.get("umo")
                 if umo and umo not in seen:
-                    seen[umo] = {"umo": umo, "platform": t.get("platform"), "sender": t.get("sender_name") or t.get("sender_id"), "lastUsed": t.get("created_at")}
+                    seen[umo] = {
+                        "umo": umo,
+                        "platform": t.get("platform"),
+                        "sender": t.get("sender_name") or t.get("sender_id"),
+                        "lastUsed": t.get("created_at"),
+                    }
         return list(seen.values())
 
     # ------------------------------------------------------------ mutation
     def add(self, record: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             self._data["seq"] = int(self._data.get("seq") or 0) + 1
-            record = {**record, "num": self._data["seq"], "created_at": record.get("created_at") or time.time()}
+            record = {
+                **record,
+                "num": self._data["seq"],
+                "created_at": record.get("created_at") or time.time(),
+            }
             self._data["tasks"].append(record)
             if len(self._data["tasks"]) > MAX_RECORDS:
                 self._data["tasks"] = self._data["tasks"][-MAX_RECORDS:]

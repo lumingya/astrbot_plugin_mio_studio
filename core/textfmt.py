@@ -31,8 +31,20 @@ STATUS_ICON = {
     "unknown": "❔",
     "missing": "🗑",
 }
-KIND_LABEL = {"workflows": "工作流", "storyboards": "分幕 / 分镜", "presets": "预设", "channels": "图像通道", "layouts": "导出模板"}
-KIND_CMD = {"workflows": "/mio ls wf", "storyboards": "/mio ls sb", "presets": "/mio ls ps", "channels": "/mio ls ch", "layouts": "/mio ls tpl"}
+KIND_LABEL = {
+    "workflows": "工作流",
+    "storyboards": "分幕 / 分镜",
+    "presets": "预设",
+    "channels": "图像通道",
+    "layouts": "导出模板",
+}
+KIND_CMD = {
+    "workflows": "/mio ls wf",
+    "storyboards": "/mio ls sb",
+    "presets": "/mio ls ps",
+    "channels": "/mio ls ch",
+    "layouts": "/mio ls tpl",
+}
 
 HELP_TEXT = """🎨 Mio 绘页 · 指令
 /mio ls — 列出工作流 / 分幕 / 预设（带编号）
@@ -65,7 +77,13 @@ def _preset_summary(item: dict[str, Any]) -> str:
     return "；".join(parts)
 
 
-def format_list(kind: str, items: list[dict[str, Any]], *, defaults: dict[str, Any] | None = None, detail: bool = True) -> str:
+def format_list(
+    kind: str,
+    items: list[dict[str, Any]],
+    *,
+    defaults: dict[str, Any] | None = None,
+    detail: bool = True,
+) -> str:
     label = KIND_LABEL.get(kind, kind)
     if not items:
         return f"{label}：Mio 中暂无记录"
@@ -92,14 +110,18 @@ def format_list(kind: str, items: list[dict[str, Any]], *, defaults: dict[str, A
             elif kind == "workflows":
                 extra = f" · {item.get('nodeCount', 0)} 节点"
             elif kind == "channels":
-                extra = f" · {item.get('provider', '')}" + (f"/{clip(item.get('model'), 20)}" if item.get("model") else "")
+                extra = f" · {item.get('provider', '')}" + (
+                    f"/{clip(item.get('model'), 20)}" if item.get("model") else ""
+                )
             elif kind == "layouts":
                 extra = f" · {item.get('layout', '')}"
         lines.append(f"{index}. {clip(item.get('title') or item.get('id'), 30)}{extra}{mark}")
     return "\n".join(lines)
 
 
-def format_catalog(catalog: dict[str, Any], kinds: tuple[str, ...], defaults: dict[str, Any] | None = None) -> str:
+def format_catalog(
+    catalog: dict[str, Any], kinds: tuple[str, ...], defaults: dict[str, Any] | None = None
+) -> str:
     blocks = [format_list(kind, catalog.get(kind) or [], defaults=defaults) for kind in kinds]
     if kinds == ("workflows", "storyboards", "presets"):
         blocks.append("用法：/mio use <工作流#> <分幕#> <预设#> — 例如 /mio use 1 1 1")
@@ -119,7 +141,12 @@ def progress_of(task: dict[str, Any] | None) -> tuple[int, int, int]:
 def status_key(task: dict[str, Any] | None) -> str:
     if not task:
         return "missing"
-    if task.get("paused") and task.get("status") not in ("complete", "failed", "interrupted", "cancelled"):
+    if task.get("paused") and task.get("status") not in (
+        "complete",
+        "failed",
+        "interrupted",
+        "cancelled",
+    ):
         return "paused"
     return str(task.get("status") or "unknown")
 
@@ -145,10 +172,16 @@ def format_jobs(views: list[dict[str, Any]], *, others: int = 0) -> str:
 
 def format_task(view: dict[str, Any]) -> str:
     key = view.get("statusKey", "unknown")
-    lines = [f"{STATUS_ICON.get(key, '❔')} 任务 #{view['num']} 《{view.get('title')}》", f"状态：{STATUS_LABEL.get(key, key)}"]
+    lines = [
+        f"{STATUS_ICON.get(key, '❔')} 任务 #{view['num']} 《{view.get('title')}》",
+        f"状态：{STATUS_LABEL.get(key, key)}",
+    ]
     total = view.get("total", 0)
     if total:
-        lines.append(f"进度：{view.get('done', 0)}/{total} 幕" + (f"，失败 {view.get('failed', 0)} 幕" if view.get("failed") else ""))
+        lines.append(
+            f"进度：{view.get('done', 0)}/{total} 幕"
+            + (f"，失败 {view.get('failed', 0)} 幕" if view.get("failed") else "")
+        )
     sel = view.get("selection") or {}
     if sel:
         parts = []
@@ -165,9 +198,14 @@ def format_task(view: dict[str, Any]) -> str:
     if view.get("error"):
         lines.append(f"错误：{clip(view['error'], 160)}")
     if view.get("created_at"):
-        lines.append("创建：" + time.strftime("%m-%d %H:%M", time.localtime(float(view["created_at"]))))
+        lines.append(
+            "创建：" + time.strftime("%m-%d %H:%M", time.localtime(float(view["created_at"])))
+        )
     if key == "complete":
         lines.append(f"下载：/mio get {view['num']} [html|zip|pdf|img] [模板#]")
     elif key in ("failed", "interrupted", "cancelled", "paused", "standby"):
-        lines.append(f"继续 / 重试：/mio resume {view['num']}" + (f"　已生成部分可 /mio get {view['num']}" if view.get("done") else ""))
+        lines.append(
+            f"继续 / 重试：/mio resume {view['num']}"
+            + (f"　已生成部分可 /mio get {view['num']}" if view.get("done") else "")
+        )
     return "\n".join(lines)

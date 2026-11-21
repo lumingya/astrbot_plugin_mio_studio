@@ -13,7 +13,11 @@ from typing import Any, Awaitable, Callable
 from astrbot.api.web import error_response, file_response, json_response, request
 
 from .mio_client import MioError
-from .service import FORMATS, IMAGE_PROFILES, NOTIFY_MODES, SEND_MODES, MioStudioService, ServiceError
+from .service import (
+    FORMATS,
+    MioStudioService,
+    ServiceError,
+)
 from .textfmt import STATUS_LABEL
 
 
@@ -23,7 +27,11 @@ def _wrap(handler: Callable[..., Awaitable[Any]]):
         try:
             return await handler(*args, **kwargs)
         except ServiceError as exc:
-            return error_response(exc.message, status_code=exc.status if 400 <= exc.status < 600 else 400, data={"code": exc.code})
+            return error_response(
+                exc.message,
+                status_code=exc.status if 400 <= exc.status < 600 else 400,
+                data={"code": exc.code},
+            )
         except MioError as exc:
             status = exc.status if 400 <= exc.status < 600 else 502
             return error_response(f"Mio: {exc.message}", status_code=status, data=exc.to_dict())
@@ -49,8 +57,18 @@ class PageApi:
             ("/tasks", self.tasks, ["GET"], "Tasks created through the plugin"),
             ("/tasks/create", self.task_create, ["POST"], "Assemble and start a task"),
             ("/tasks/<task_id>", self.task_detail, ["GET"], "Task detail"),
-            ("/tasks/<task_id>/action", self.task_action, ["POST"], "pause / resume / cancel / remove"),
-            ("/tasks/<task_id>/export", self.task_export, ["GET"], "Download export (html/zip/pdf)"),
+            (
+                "/tasks/<task_id>/action",
+                self.task_action,
+                ["POST"],
+                "pause / resume / cancel / remove",
+            ),
+            (
+                "/tasks/<task_id>/export",
+                self.task_export,
+                ["GET"],
+                "Download export (html/zip/pdf)",
+            ),
             ("/tasks/<task_id>/send", self.task_send, ["POST"], "Send result to a chat session"),
             ("/sessions", self.sessions, ["GET"], "Known chat sessions"),
         ]
@@ -90,7 +108,10 @@ class PageApi:
                         {"value": "separate", "label": "逐条发送"},
                         {"value": "batch", "label": "一条消息内多图"},
                     ],
-                    "seed_modes": [{"value": "random", "label": "随机"}, {"value": "fixed", "label": "固定（需要工作流映射种子节点）"}],
+                    "seed_modes": [
+                        {"value": "random", "label": "随机"},
+                        {"value": "fixed", "label": "固定（需要工作流映射种子节点）"},
+                    ],
                 },
             }
         )
@@ -113,11 +134,38 @@ class PageApi:
             limit_int = 50
         views, others = await self.service.task_views(limit=limit_int, force=True)
         views.reverse()
-        return json_response({"items": [self._task_json(v) for v in views], "others": others, "statusLabels": STATUS_LABEL})
+        return json_response(
+            {
+                "items": [self._task_json(v) for v in views],
+                "others": others,
+                "statusLabels": STATUS_LABEL,
+            }
+        )
 
     @staticmethod
     def _task_json(view: dict[str, Any]) -> dict[str, Any]:
-        keys = ("num", "id", "title", "albumId", "umo", "sender_id", "sender_name", "platform", "status", "statusKey", "done", "failed", "total", "error", "created_at", "finished_at", "notified", "selection", "live", "queuePosition")
+        keys = (
+            "num",
+            "id",
+            "title",
+            "albumId",
+            "umo",
+            "sender_id",
+            "sender_name",
+            "platform",
+            "status",
+            "statusKey",
+            "done",
+            "failed",
+            "total",
+            "error",
+            "created_at",
+            "finished_at",
+            "notified",
+            "selection",
+            "live",
+            "queuePosition",
+        )
         return {k: view.get(k) for k in keys}
 
     async def task_create(self):
@@ -132,7 +180,14 @@ class PageApi:
             str(body.get("channel") or "") or None,
         )
         umo = str(body.get("umo") or "").strip()
-        record = await self.service.create_task(selection, umo=umo, sender_name="控制面板", platform=umo.split(":", 1)[0] if ":" in umo else "panel", title=str(body.get("title") or ""), start=body.get("start", True) is not False)
+        record = await self.service.create_task(
+            selection,
+            umo=umo,
+            sender_name="控制面板",
+            platform=umo.split(":", 1)[0] if ":" in umo else "panel",
+            title=str(body.get("title") or ""),
+            start=body.get("start", True) is not False,
+        )
         return json_response({"task": self._task_json(self.service.merge_view(record, None))})
 
     async def task_detail(self, task_id: str):
@@ -154,7 +209,9 @@ class PageApi:
         fmt = str(request.query.get("format", "") or "") or None
         layout = str(request.query.get("layout", "") or "") or None
         result = await self.service.export(record, fmt=fmt, layout=layout)
-        return file_response(result["path"], filename=result["filename"], content_type=result["contentType"])
+        return file_response(
+            result["path"], filename=result["filename"], content_type=result["contentType"]
+        )
 
     async def task_send(self, task_id: str):
         body = await self._body()
@@ -166,7 +223,12 @@ class PageApi:
         if mode == "images":
             count = await self.service.send_images(record, umo)
             return json_response({"message": f"已发送 {count} 张图片到 {umo}"})
-        result = await self.service.send_export(record, umo, fmt=str(body.get("format") or "") or None, layout=str(body.get("layout") or "") or None)
+        result = await self.service.send_export(
+            record,
+            umo,
+            fmt=str(body.get("format") or "") or None,
+            layout=str(body.get("layout") or "") or None,
+        )
         return json_response({"message": f"已发送 {result['filename']} 到 {umo}"})
 
     async def sessions(self):
