@@ -57,30 +57,6 @@
         "type": "string",
         "default": "",
         "hint": "留空时按创作流程选择预设。"
-      },
-      "title_template": {
-        "description": "画册标题模板",
-        "type": "string",
-        "default": "{story} · {preset}",
-        "hint": "可用变量：{story} {preset} {workflow} {channel} {date} {time}"
-      },
-      "seed_mode": {
-        "description": "旧版种子模式",
-        "type": "string",
-        "default": "random",
-        "options": ["random", "fixed"],
-        "hint": "保留旧版设置。v2 工坊按 Mio 工作流内的种子配置生成。"
-      },
-      "seed": {
-        "description": "旧版固定种子",
-        "type": "int",
-        "default": 1
-      },
-      "concurrency": {
-        "description": "旧版幕内并发",
-        "type": "int",
-        "default": 0,
-        "hint": "保留旧版设置。v2 的单任务幕内并发在 Mio 侧配置；这里的全局任务上限在画图配额中设置。"
       }
     }
   },

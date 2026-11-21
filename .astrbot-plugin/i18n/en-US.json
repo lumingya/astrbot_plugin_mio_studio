@@ -1,12 +1,12 @@
 {
   "metadata": {
     "display_name": "Mio Studio",
-    "short_desc": "Drive a local Mio · 绘页 (comfy-comic-studio) by number and fetch the results",
-    "desc": "Connects Mio · 绘页 through Open API v2. Assemble storyboards, track rendering and send finished comics from chat. Manage settings in the control panel."
+    "short_desc": "Turn an idea into a comic and deliver it in chat",
+    "desc": "Connects Mio through Open API v2 for idea-to-comic creation, workshop assembly, image trials, gallery exports, multiple instances and per-chat delivery."
   },
   "pages": {
     "mio-studio": {
-      "title": "Mio Studio · Control Panel"
+      "title": "Mio Studio · Publishing Desk"
     }
   }
 }

@@ -76,3 +76,8 @@ exports/
 cache/
 data/
 *.log
+
+# Frontend dependencies and local browser evidence
+web-src/node_modules/
+.playwright-cli/
+output/playwright/

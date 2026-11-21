@@ -1,12 +1,12 @@
 {
   "metadata": {
     "display_name": "Mio 绘页",
-    "short_desc": "用编号调度 Mio · 绘页 生成画册并取回成品",
-    "desc": "对接本地部署的 Mio · 绘页（comfy-comic-studio）：/mio ls 列出工作流 / 分幕 / 预设，/mio use 1 2 3 一键装配并开始生成，/mio status 查进度，/mio get 按默认模板导出 html/zip/pdf 或直接发图；完成通知策略与默认参数在独立控制面板中配置。"
+    "short_desc": "从一句灵感到漫画、画册与聊天交付",
+    "desc": "通过开放 API v2 连接 Mio · 绘页，支持灵感出漫、工坊装配、单图试画、作品导出、多实例和按会话交付。"
   },
   "pages": {
     "mio-studio": {
-      "title": "Mio 绘页 · 控制面板"
+      "title": "Mio 绘页 · 出版工作室"
     }
   }
 }

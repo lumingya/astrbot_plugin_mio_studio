@@ -6,6 +6,7 @@ import asyncio
 import re
 import time
 import uuid
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ from .instances import InstanceConfig, InstanceRegistry
 from .resources import Resources
 from .store import ACTIVE_STATES, AdmissionDenied, TaskStore
 from .textfmt import format_task
-from .v2_client import DownloadedFile, MioApiError
+from .v2_client import DownloadedFile, MioApiError, MioV2Client
 from .webhook import (
     WebhookEvent,
     WebhookListener,
@@ -115,10 +116,131 @@ class MioStudioService:
                 self.logger.warning("[mio_studio] Webhook 监听不可用，继续使用轮询。")
 
     async def update_config(self, changes):
+        mio = changes.get("mio") if isinstance(changes, dict) else None
+        if isinstance(mio, dict) and "base_url" in mio:
+            current = self.instances.resolve("primary")
+            try:
+                new = replace(current, base_url=mio["base_url"] or current.base_url)
+            except ValueError as exc:
+                raise ServiceError(str(exc)) from None
+            bound = self.store.list_tasks(instance_id="primary", limit=1)
+            if new.base_url != current.base_url and (
+                bound or self.store.get_webhook("primary").get("hook_id")
+            ):
+                raise ServiceError(
+                    "此连接已关联作品或回调。请用新的实例 ID 添加另一台 Mio。", status=409
+                )
         self.settings.update(changes)
         await self.reload_config()
         self.ensure_poller()
         return self.config_view()
+
+    async def change_instance(self, actor: Actor, action: str, body: dict):
+        self.governance.require(actor, "admin")
+        instance_id = body.get("id") or ""
+        if action == "probe" and not body.get("base_url"):
+            return await self.status(actor=actor, instance_id=instance_id or None)
+        async with self._controls:
+            if action == "default":
+                self.instances.resolve(instance_id)
+                self.store.set_default_instance(instance_id)
+            elif action == "remove":
+                if instance_id == "primary":
+                    raise ServiceError("主实例不能移除，可在连接设置更换地址。")
+                if self.store.get_webhook(instance_id).get("hook_id"):
+                    raise ServiceError("请先在交付页面解除该实例的 Webhook。", status=409)
+                try:
+                    if not self.store.remove_instance(instance_id):
+                        raise ServiceError("该实例不存在。", status=404)
+                except ValueError as exc:
+                    raise ServiceError(str(exc), status=409) from None
+            elif action in {"save", "probe"}:
+                old = next(
+                    (item for item in self.instances.public() if item["id"] == instance_id), None
+                )
+                token = body.get("token") or ""
+                if token and (not isinstance(token, str) or not token.startswith("mio_")):
+                    raise ServiceError("请粘贴 Mio 开放 API 的 mio_ 令牌。")
+                try:
+                    instance = InstanceConfig(
+                        instance_id,
+                        body.get("label") or (old or {}).get("label") or instance_id,
+                        body.get("base_url") or (old or {}).get("base_url") or "",
+                        token,
+                        body.get("timeout", (old or {}).get("timeout", 60)),
+                        body.get("cloud", (old or {}).get("cloud", False)),
+                    )
+                except ValueError as exc:
+                    raise ServiceError(str(exc)) from None
+                same_address = old and instance.base_url == old["base_url"]
+                if (
+                    not old
+                    and action == "save"
+                    and self.store.list_tasks(
+                        instance_id=instance_id,
+                        limit=1,
+                    )
+                ):
+                    raise ServiceError(
+                        "该 ID 曾用于其他实例。请为新实例填写不同的 ID。", status=409
+                    )
+                if same_address and not token and body.get("clear_token") is not True:
+                    token = self.instances.resolve(instance_id).token
+                    instance = replace(instance, token=token)
+                if action == "probe":
+                    client = MioV2Client(
+                        instance.base_url, instance.token, timeout=min(15, instance.timeout)
+                    )
+                    try:
+                        meta = await client.probe()
+                        if instance.token:
+                            identity = await client.call("whoami")
+                            return {
+                                "ok": True,
+                                "api": meta["api"],
+                                "version": meta["server"],
+                                "scopes": identity.get("scopes", []),
+                            }
+                        return {
+                            "ok": False,
+                            "api": meta["api"],
+                            "version": meta["server"],
+                            "error": "连接成功，还需要填写 Mio 开放 API 令牌。",
+                        }
+                    finally:
+                        await client.close()
+                if (
+                    old
+                    and not same_address
+                    and (
+                        self.store.list_tasks(instance_id=instance_id, limit=1)
+                        or self.store.get_webhook(instance_id).get("hook_id")
+                    )
+                ):
+                    raise ServiceError(
+                        "此实例已关联作品或回调。请使用新实例 ID 添加另一台 Mio。",
+                        status=409,
+                    )
+                if instance_id == "primary":
+                    settings = {
+                        "base_url": instance.base_url,
+                        "request_timeout": int(instance.timeout),
+                        "cloud": instance.cloud,
+                    }
+                    if token:
+                        settings["api_token"] = token
+                    elif body.get("clear_token") is True:
+                        settings["api_token"] = None
+                    self.settings.update({"mio": settings})
+                else:
+                    self.store.save_instance(asdict(instance))
+            else:
+                raise ServiceError("未知的实例操作。")
+            await self.reload_config()
+            self.store.audit(
+                f"instance_{action}", actor_id=actor.scoped_id, instance_id=instance_id
+            )
+            return {"instances": self.instances.public(), "default_id": self.instances.default_id}
 
     async def start(self) -> None:
         await self.reload_config()
@@ -141,6 +263,17 @@ class MioStudioService:
         return self.instances.resolve(
             instance_id, self.session_policy(actor.session).get("instance_id")
         )
+
+    def client_for_task(self, record):
+        instance = self.instances.resolve(record["instance_id"])
+        bound = record.get("backend_address")
+        if bound and instance.base_url != bound:
+            raise ServiceError(
+                "这项任务属于原来的 Mio 地址。请恢复原地址后重试。",
+                code="instance_binding_changed",
+                status=409,
+            )
+        return self.instances.get(instance.id)
 
     async def status(self, *, actor: Actor, instance_id: str | None = None) -> dict[str, Any]:
         instance = self.route(actor, instance_id)
@@ -297,6 +430,7 @@ class MioStudioService:
             "kind": kind,
             "title": title.strip()[:120] or "未命名作品",
             "instance_id": instance.id,
+            "backend_address": instance.base_url,
             "umo": actor.session,
             "platform": actor.platform,
             "sender_id": actor.id,
@@ -487,7 +621,7 @@ class MioStudioService:
     async def _episode(self, record):
         if not record.get("episode_id"):
             raise ServiceError("该任务尚未生成分集。", status=409)
-        client = self.instances.get(record["instance_id"])
+        client = self.client_for_task(record)
         episode = await client.call("get_episode", path_params={"episode_id": record["episode_id"]})
         if not isinstance(episode, dict) or episode.get("id") != record["episode_id"]:
             raise ServiceError("无法确认 Mio 的分集信息。", status=502)
@@ -699,7 +833,7 @@ class MioStudioService:
     async def _dispatch(self, record):
         task_id = record["id"]
         try:
-            client = self.instances.get(record["instance_id"])
+            client = self.client_for_task(record)
             data = await self._submit(client, record)
             job = data.get("job") or {}
             job_id = data.get("job_id") or job.get("id")
@@ -821,12 +955,14 @@ class MioStudioService:
         if not record.get("job_id"):
             return
         try:
-            job = await self.instances.get(record["instance_id"]).call(
+            job = await self.client_for_task(record).call(
                 "get_job",
                 path_params={"job_id": record["job_id"]},
             )
-        except MioApiError as exc:
-            if exc.status == 404:
+        except (MioApiError, ServiceError) as exc:
+            if exc.code == "instance_binding_changed":
+                changes = {"status": "interrupted", "error": exc.message}
+            elif exc.status == 404:
                 changes = {"status": "missing", "error": "Mio 中已找不到该作业。"}
             else:
                 return
@@ -897,7 +1033,7 @@ class MioStudioService:
                 self._enqueue_existing_render(record, actor)
                 return f"任务 #{number} 已重新排队。"
             raise ServiceError("此任务没有可控制的作业。请在 Mio 核对后重新创建。", status=409)
-        client = self.instances.get(record["instance_id"])
+        client = self.client_for_task(record)
         path = {"job_id": job_id}
         if action == "resume" and status in {"paused", "failed", "cancelled"}:
             source = (record.get("request") or {}).get("generation") or {}
@@ -959,7 +1095,7 @@ class MioStudioService:
         episode = record.get("episode_id")
         if not episode:
             raise ServiceError("任务还没有生成可取件的分集。", status=409)
-        client = self.instances.get(record["instance_id"])
+        client = self.client_for_task(record)
         fmt = fmt or self.export_format(umo)
         template = (
             layout
@@ -1035,7 +1171,7 @@ class MioStudioService:
             raise ServiceError("任务还没有可发送的分幕图片。", status=409)
         limit = _integer(self.cfg("delivery", "max_images", 30), 30, 1, 100)
         bundle = await self.delivery.frames(
-            self.instances.get(record["instance_id"]),
+            self.client_for_task(record),
             record["episode_id"],
             limit=limit,
             take_fallback=record.get("kind") == "trial",
@@ -1081,7 +1217,7 @@ class MioStudioService:
         actor = Actor.panel()
         try:
             if mode == "qa_then_send":
-                client = self.instances.get(record["instance_id"])
+                client = self.client_for_task(record)
                 job = await client.call(
                     "qa_episode",
                     path_params={"episode_id": record["episode_id"]},

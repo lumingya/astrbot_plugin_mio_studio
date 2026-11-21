@@ -10,7 +10,6 @@ import sqlite3
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from string import Formatter
 from typing import TYPE_CHECKING, Any
 
 from .instances import PRIMARY_INSTANCE_ID, InstanceConfig
@@ -26,8 +25,6 @@ _SCHEMA = json.loads(
 _FIELDS = {section: meta["items"] for section, meta in _SCHEMA.items()}
 _BOUNDS = {
     "request_timeout": (5, 600),
-    "seed": (0, 2**32 - 1),
-    "concurrency": (0, 8),
     "max_images": (1, 100),
     "max_file_mb": (1, 200),
     "poll_interval": (2, 120),
@@ -52,7 +49,6 @@ _SESSION_FIELDS = {
 _TOKEN = re.compile(r"mio_tok_[A-Za-z0-9]+_[A-Za-z0-9_-]{20,150}")
 _TOKEN_ENV = re.compile(r"MIO_[A-Z][A-Z0-9_]{0,63}")
 _INSTANCE = re.compile(r"[a-z0-9][a-z0-9_-]{0,47}")
-_TITLE_FIELDS = {"story", "preset", "workflow", "channel", "date", "time"}
 _UNCHANGED = object()
 
 
@@ -125,16 +121,6 @@ def _normalize(section: str, key: str, value: Any) -> Any:
                 raise _bad(label, "请输入监听 IP 地址或 localhost。") from None
         elif key == "theme_color" and value and not re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
             raise _bad(label, "请使用 6 位十六进制颜色，例如 #A05C4D。")
-        elif key == "title_template":
-            try:
-                valid = all(
-                    field is None or field in _TITLE_FIELDS and not (spec or conv)
-                    for _, field, spec, conv in Formatter().parse(value)
-                )
-            except ValueError:
-                valid = False
-            if not valid:
-                raise _bad(label, "请检查花括号；只支持设置说明中列出的变量。")
     return value
 
 
