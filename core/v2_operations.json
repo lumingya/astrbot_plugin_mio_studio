@@ -1,0 +1,601 @@
+{
+  "revision": "7324e2e09985005afe2a9bb58156367259308564",
+  "operations": {
+    "add_panel": [
+      "POST",
+      "/episodes/{episode_id}/panels"
+    ],
+    "adopt_take": [
+      "POST",
+      "/episodes/{episode_id}/takes/{take_id}/adopt"
+    ],
+    "append_variants": [
+      "POST",
+      "/series/{series_id}/variants"
+    ],
+    "apply_variables": [
+      "POST",
+      "/series/{series_id}/variables/apply"
+    ],
+    "assemble": [
+      "POST",
+      "/workshop/assemble"
+    ],
+    "assemble_creation_kit": [
+      "POST",
+      "/creation-kits/{series_id}/assemble"
+    ],
+    "assistant_apply": [
+      "POST",
+      "/episodes/{episode_id}/assistant/apply"
+    ],
+    "assistant_propose": [
+      "POST",
+      "/episodes/{episode_id}/assistant/propose"
+    ],
+    "avoid_lettering": [
+      "POST",
+      "/episodes/{episode_id}/strip/avoid-lettering"
+    ],
+    "cancel_job": [
+      "POST",
+      "/jobs/{job_id}/cancel"
+    ],
+    "capture_workflow_state": [
+      "POST",
+      "/workflows/{workflow_id}/capture-state"
+    ],
+    "clear_queue": [
+      "POST",
+      "/workshop/queue/clear"
+    ],
+    "clone_task": [
+      "POST",
+      "/workshop/tasks/{series_id}/clone"
+    ],
+    "comfy_adapters": [
+      "GET",
+      "/comfy-adapters"
+    ],
+    "compile_preview": [
+      "POST",
+      "/workflows/{workflow_id}/compile"
+    ],
+    "composition_preview": [
+      "POST",
+      "/episodes/{episode_id}/panels/{panel_id}/composition"
+    ],
+    "copy_episode": [
+      "POST",
+      "/episodes/{episode_id}/copy"
+    ],
+    "copy_workflow": [
+      "POST",
+      "/workflows/{workflow_id}/copy"
+    ],
+    "create_checkpoint": [
+      "POST",
+      "/series/{series_id}/checkpoints"
+    ],
+    "create_episode": [
+      "POST",
+      "/series/{series_id}/episodes"
+    ],
+    "create_preset": [
+      "POST",
+      "/workshop/presets"
+    ],
+    "create_series": [
+      "POST",
+      "/series"
+    ],
+    "create_storyboard": [
+      "POST",
+      "/workshop/storyboards"
+    ],
+    "create_webhook": [
+      "POST",
+      "/webhooks"
+    ],
+    "create_workshop_task": [
+      "POST",
+      "/workshop/tasks"
+    ],
+    "delete_album_template": [
+      "DELETE",
+      "/album-templates/{template_id}"
+    ],
+    "delete_checkpoint": [
+      "DELETE",
+      "/series/{series_id}/checkpoints/{checkpoint_id}"
+    ],
+    "delete_export": [
+      "DELETE",
+      "/export/jobs/{job_id}"
+    ],
+    "delete_job": [
+      "DELETE",
+      "/jobs/{job_id}"
+    ],
+    "delete_panel": [
+      "DELETE",
+      "/episodes/{episode_id}/panels/{panel_id}"
+    ],
+    "delete_panels": [
+      "POST",
+      "/episodes/{episode_id}/panels/batch-delete"
+    ],
+    "delete_webhook": [
+      "DELETE",
+      "/webhooks/{hook_id}"
+    ],
+    "delete_workflow": [
+      "DELETE",
+      "/workflows/{workflow_id}"
+    ],
+    "diagnose_workflow": [
+      "POST",
+      "/workflows/{workflow_id}/diagnose"
+    ],
+    "download_export": [
+      "GET",
+      "/export/jobs/{job_id}/file"
+    ],
+    "duplicate_panel": [
+      "POST",
+      "/episodes/{episode_id}/panels/{panel_id}/duplicate"
+    ],
+    "edit_take": [
+      "POST",
+      "/episodes/{episode_id}/edit"
+    ],
+    "export_album": [
+      "POST",
+      "/export/album"
+    ],
+    "export_bundle": [
+      "GET",
+      "/series/{series_id}/bundle"
+    ],
+    "export_creation_kit": [
+      "POST",
+      "/creation-kits/export"
+    ],
+    "export_episode": [
+      "GET",
+      "/episodes/{episode_id}/export"
+    ],
+    "export_episode_deliverable": [
+      "POST",
+      "/episodes/{episode_id}/deliverables/export"
+    ],
+    "export_formats": [
+      "GET",
+      "/export/formats"
+    ],
+    "export_motion": [
+      "POST",
+      "/export/motion"
+    ],
+    "export_portable": [
+      "POST",
+      "/export/portable"
+    ],
+    "export_presets": [
+      "GET",
+      "/export/presets"
+    ],
+    "fetch_models": [
+      "POST",
+      "/settings/models"
+    ],
+    "finalize_episode": [
+      "POST",
+      "/episodes/{episode_id}/finalize"
+    ],
+    "find_variables": [
+      "POST",
+      "/series/{series_id}/variables/find"
+    ],
+    "generate_episode": [
+      "POST",
+      "/series/{series_id}/episodes/generate"
+    ],
+    "get_album_template": [
+      "GET",
+      "/album-templates/{template_id}"
+    ],
+    "get_asset": [
+      "GET",
+      "/assets/{asset_id}"
+    ],
+    "get_checkpoint": [
+      "GET",
+      "/series/{series_id}/checkpoints/{checkpoint_id}"
+    ],
+    "get_episode": [
+      "GET",
+      "/episodes/{episode_id}"
+    ],
+    "get_episode_deliverables": [
+      "GET",
+      "/episodes/{episode_id}/deliverables"
+    ],
+    "get_job": [
+      "GET",
+      "/jobs/{job_id}"
+    ],
+    "get_job_state_recovery": [
+      "GET",
+      "/jobs/{job_id}/state-recovery"
+    ],
+    "get_preset": [
+      "GET",
+      "/workshop/presets/{preset_id}"
+    ],
+    "get_queue": [
+      "GET",
+      "/workshop/queue"
+    ],
+    "get_series": [
+      "GET",
+      "/series/{series_id}"
+    ],
+    "get_settings": [
+      "GET",
+      "/settings"
+    ],
+    "get_storyboard": [
+      "GET",
+      "/workshop/storyboards/{storyboard_id}"
+    ],
+    "get_work_head": [
+      "GET",
+      "/series/{series_id}/head"
+    ],
+    "get_workflow": [
+      "GET",
+      "/workflows/{workflow_id}"
+    ],
+    "get_workshop": [
+      "GET",
+      "/workshop"
+    ],
+    "image_adapters": [
+      "GET",
+      "/image-adapters"
+    ],
+    "import_album_template": [
+      "POST",
+      "/album-templates"
+    ],
+    "import_creation_kit": [
+      "POST",
+      "/creation-kits/import"
+    ],
+    "import_panels": [
+      "POST",
+      "/episodes/{episode_id}/panels/import"
+    ],
+    "import_workflow": [
+      "POST",
+      "/workflows"
+    ],
+    "inspect_creation_kit": [
+      "POST",
+      "/creation-kits/inspect"
+    ],
+    "inspect_workflow": [
+      "POST",
+      "/workflows/inspect"
+    ],
+    "job_events": [
+      "GET",
+      "/jobs/{job_id}/events"
+    ],
+    "job_result_deliveries": [
+      "GET",
+      "/jobs/{job_id}/deliveries"
+    ],
+    "layout_strip": [
+      "POST",
+      "/episodes/{episode_id}/strip/layout"
+    ],
+    "list_album_templates": [
+      "GET",
+      "/album-templates"
+    ],
+    "list_checkpoints": [
+      "GET",
+      "/series/{series_id}/checkpoints"
+    ],
+    "list_creation_kits": [
+      "GET",
+      "/creation-kits"
+    ],
+    "list_episodes": [
+      "GET",
+      "/series/{series_id}/episodes"
+    ],
+    "list_image_channels": [
+      "GET",
+      "/image-channels"
+    ],
+    "list_jobs": [
+      "GET",
+      "/jobs"
+    ],
+    "list_operations": [
+      "GET",
+      "/operations"
+    ],
+    "list_presets": [
+      "GET",
+      "/workshop/presets"
+    ],
+    "list_series": [
+      "GET",
+      "/series"
+    ],
+    "list_storyboards": [
+      "GET",
+      "/workshop/storyboards"
+    ],
+    "list_webhooks": [
+      "GET",
+      "/webhooks"
+    ],
+    "list_workflows": [
+      "GET",
+      "/workflows"
+    ],
+    "meta": [
+      "GET",
+      "/meta"
+    ],
+    "motion_plan": [
+      "GET",
+      "/episodes/{episode_id}/motion-plan"
+    ],
+    "order_queue": [
+      "PUT",
+      "/workshop/queue/order"
+    ],
+    "pacing_apply": [
+      "POST",
+      "/episodes/{episode_id}/pacing/apply"
+    ],
+    "pacing_suggest": [
+      "POST",
+      "/episodes/{episode_id}/pacing/suggest"
+    ],
+    "panel_history": [
+      "GET",
+      "/episodes/{episode_id}/panels/{panel_id}/history"
+    ],
+    "panel_prompt": [
+      "GET",
+      "/episodes/{episode_id}/panels/{panel_id}/prompt"
+    ],
+    "patch_episode": [
+      "PATCH",
+      "/episodes/{episode_id}"
+    ],
+    "patch_panel": [
+      "PATCH",
+      "/episodes/{episode_id}/panels/{panel_id}"
+    ],
+    "patch_panels": [
+      "POST",
+      "/episodes/{episode_id}/panels/batch"
+    ],
+    "patch_preset": [
+      "PATCH",
+      "/workshop/presets/{preset_id}"
+    ],
+    "patch_queue": [
+      "PATCH",
+      "/workshop/queue"
+    ],
+    "patch_series": [
+      "PATCH",
+      "/series/{series_id}"
+    ],
+    "patch_settings": [
+      "PATCH",
+      "/settings"
+    ],
+    "patch_storyboard": [
+      "PATCH",
+      "/workshop/storyboards/{storyboard_id}"
+    ],
+    "patch_workflow": [
+      "PATCH",
+      "/workflows/{workflow_id}"
+    ],
+    "pause_job": [
+      "POST",
+      "/jobs/{job_id}/pause"
+    ],
+    "pause_queue": [
+      "POST",
+      "/workshop/queue/pause"
+    ],
+    "preview_assembly": [
+      "POST",
+      "/workshop/assemble/preview"
+    ],
+    "preview_checkpoint": [
+      "GET",
+      "/series/{series_id}/checkpoints/{checkpoint_id}/preview"
+    ],
+    "preview_creation_kit": [
+      "POST",
+      "/creation-kits/{series_id}/preview"
+    ],
+    "preview_kit_preset": [
+      "POST",
+      "/creation-kits/{series_id}/preview-preset"
+    ],
+    "preview_preset": [
+      "POST",
+      "/workshop/preview"
+    ],
+    "preview_variables": [
+      "POST",
+      "/series/{series_id}/variables/preview"
+    ],
+    "qa_episode": [
+      "POST",
+      "/episodes/{episode_id}/qa"
+    ],
+    "reading_panel_image": [
+      "GET",
+      "/episodes/{episode_id}/panels/{panel_id}/image"
+    ],
+    "reading_preview": [
+      "GET",
+      "/episodes/{episode_id}/reading"
+    ],
+    "rebind_job_executor": [
+      "POST",
+      "/jobs/{job_id}/rebind-executor"
+    ],
+    "reject_take": [
+      "POST",
+      "/episodes/{episode_id}/takes/{take_id}/reject"
+    ],
+    "remove_from_queue": [
+      "POST",
+      "/workshop/queue/remove"
+    ],
+    "render_episode": [
+      "POST",
+      "/episodes/{episode_id}/render"
+    ],
+    "reorder_episodes": [
+      "POST",
+      "/series/{series_id}/episodes/reorder"
+    ],
+    "reorder_panels": [
+      "POST",
+      "/episodes/{episode_id}/panels/reorder"
+    ],
+    "replay_job_result": [
+      "POST",
+      "/jobs/{job_id}/items/{idx}/replay-result"
+    ],
+    "resolve_job_item": [
+      "POST",
+      "/jobs/{job_id}/items/{idx}/resolve"
+    ],
+    "restore_checkpoint": [
+      "POST",
+      "/series/{series_id}/checkpoints/{checkpoint_id}/restore"
+    ],
+    "restore_episode": [
+      "POST",
+      "/episodes/{episode_id}/restore"
+    ],
+    "restore_job_item_state": [
+      "POST",
+      "/jobs/{job_id}/items/{idx}/restore-state"
+    ],
+    "restore_panel": [
+      "POST",
+      "/episodes/{episode_id}/panels/{panel_id}/restore"
+    ],
+    "restore_series": [
+      "POST",
+      "/series/{series_id}/restore"
+    ],
+    "restore_take": [
+      "POST",
+      "/episodes/{episode_id}/takes/{take_id}/restore"
+    ],
+    "resume_job": [
+      "POST",
+      "/jobs/{job_id}/resume"
+    ],
+    "resume_queue": [
+      "POST",
+      "/workshop/queue/resume"
+    ],
+    "retry_job": [
+      "POST",
+      "/jobs/{job_id}/retry"
+    ],
+    "save_strip": [
+      "PUT",
+      "/episodes/{episode_id}/strip"
+    ],
+    "slice_plan": [
+      "GET",
+      "/episodes/{episode_id}/slices"
+    ],
+    "start_queue": [
+      "POST",
+      "/workshop/queue/start"
+    ],
+    "strip_png": [
+      "GET",
+      "/episodes/{episode_id}/strip.png"
+    ],
+    "strip_report": [
+      "GET",
+      "/episodes/{episode_id}/strip/report"
+    ],
+    "submit_album_export": [
+      "POST",
+      "/export/jobs/album"
+    ],
+    "submit_portable_export": [
+      "POST",
+      "/export/jobs/portable"
+    ],
+    "submit_strip_export": [
+      "POST",
+      "/export/jobs/strip"
+    ],
+    "take_image": [
+      "GET",
+      "/episodes/{episode_id}/takes/{take_id}/image"
+    ],
+    "test_webhook": [
+      "POST",
+      "/webhooks/{hook_id}/test"
+    ],
+    "transfer_panels": [
+      "POST",
+      "/series/{series_id}/panels/transfer"
+    ],
+    "trash_episode": [
+      "DELETE",
+      "/episodes/{episode_id}"
+    ],
+    "trash_series": [
+      "DELETE",
+      "/series/{series_id}"
+    ],
+    "trial_workflow": [
+      "POST",
+      "/workflows/{workflow_id}/trial"
+    ],
+    "update_webhook": [
+      "PATCH",
+      "/webhooks/{hook_id}"
+    ],
+    "webhook_deliveries": [
+      "GET",
+      "/webhooks/{hook_id}/deliveries"
+    ],
+    "whoami": [
+      "GET",
+      "/whoami"
+    ],
+    "workflow_loras": [
+      "GET",
+      "/workflows/{workflow_id}/loras"
+    ]
+  }
+}
