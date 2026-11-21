@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from pathlib import Path
@@ -281,6 +282,8 @@ class MioStudioService:
         text: str = "",
         cloud: bool = False,
         delivery: dict | None = None,
+        series_id: str = "",
+        episode_id: str = "",
     ):
         instance = self.route(actor, instance_id)
         if not instance.token:
@@ -301,6 +304,8 @@ class MioStudioService:
             "selection": selection or {},
             "request": body,
             "delivery": delivery or {},
+            "series_id": series_id,
+            "episode_id": episode_id,
             "notified": False,
         }
         try:
@@ -342,6 +347,264 @@ class MioStudioService:
             cloud=bool((body.get("generation") or {}).get("cloud_channel_id")),
             text=title,
         )
+
+    async def create_draw(
+        self,
+        idea,
+        *,
+        actor: Actor,
+        instance_id=None,
+        series=None,
+        style=None,
+        candidates=1,
+        layout=None,
+        mode=None,
+    ):
+        instance = self.route(actor, instance_id)
+        idea = str(idea or "").strip()
+        if not 1 <= len(idea) <= 2000:
+            raise ServiceError("请写一句不超过 2000 字的创作灵感。")
+        self.governance.policy(actor, cloud=instance.cloud, text=idea)
+        client = self.instances.get(instance.id)
+        series_id = ""
+        profile_id = "profile_default"
+        if series:
+            available = await self.resources.series(client, limit=100)
+            chosen = self.pick(available, series, label="系列")
+            series_id = chosen["id"]
+            existing = self.store.find_remote(instance.id, series_id=series_id)
+            if not actor.is_admin:
+                if not existing:
+                    raise ServiceError("只能向自己创建的系列添加新分集。", status=403)
+                self.governance.authorize_task(actor, existing)
+            remote = await client.call("get_series", path_params={"series_id": series_id})
+            profile_id = remote.get("default_profile_id") or profile_id
+        cat = None
+        style_label = ""
+        if style:
+            cat = await self.resources.catalog(client)
+            preset = self.pick(cat.get("presets", []), style, label="风格预设")
+            style_label = preset["title"]
+            entries = [f"{part['key']}：{part['value']}" for part in preset.get("entries", [])[:16]]
+            idea = (idea + "\n画风参考：" + style_label + "\n" + "\n".join(entries))[:3500]
+        if layout:
+            cat = cat if cat is not None else await self.resources.catalog(client)
+            layout = self.pick(cat.get("layouts", []), layout, label="导出模板")["id"]
+        cloud = await self._uses_cloud_profile(client, profile_id)
+        cloud_policy = self.governance.policy(actor, cloud=instance.cloud or cloud, text=idea)
+        return self._admit(
+            actor,
+            instance.id,
+            kind="draw",
+            title=idea.splitlines()[0][:48],
+            series_id=series_id,
+            body={
+                "idea": idea,
+                "profile_id": profile_id,
+                "candidates": _integer(candidates, 1, 1, 16),
+                "cloud_allowed": cloud_policy.cloud,
+            },
+            selection={"presetTitles": [style_label]} if style_label else {},
+            delivery={
+                **({"layout_id": layout} if layout else {}),
+                "notify_mode": mode if mode in NOTIFY_MODES else ("export" if layout else "strip"),
+            },
+            text=idea,
+            cloud=cloud,
+        )
+
+    @staticmethod
+    async def _uses_cloud_profile(client, profile_id):
+        profile = await client.call("get_profile", path_params={"profile_id": profile_id})
+        if not isinstance(profile, dict) or profile.get("id") != profile_id:
+            raise ServiceError("Mio 没有返回有效的出图配置，请在绘页检查默认工作流。", status=502)
+        return profile.get("cloud_shape") is True
+
+    async def _verify_draw_profiles(self, client, episode, base_profile, cloud_allowed):
+        if cloud_allowed:
+            return
+        profile_ids = {base_profile}
+        profile_ids.update(
+            value
+            for panel in _entries(episode.get("panels"))
+            if (value := (panel.get("overrides") or {}).get("profile_id"))
+        )
+        for profile in profile_ids:
+            if await self._uses_cloud_profile(client, profile):
+                raise ServiceError(
+                    "出图配置已改为云端。请重新提交，让插件检查云端权限和额度。", status=403
+                )
+
+    async def create_trial(self, prompt, workflow=None, *, actor: Actor, instance_id=None):
+        instance = self.route(actor, instance_id)
+        prompt = str(prompt or "").strip()
+        if not 1 <= len(prompt) <= 8000:
+            raise ServiceError("试画提示词应有 1 到 8000 字。")
+        self.governance.policy(actor, cloud=instance.cloud, text=prompt)
+        cat = await self.catalog(actor=actor, instance_id=instance.id)
+        workflows = cat.get("workflows", [])
+        default = workflow or self.catalog_defaults()["workflows"]
+        chosen = (
+            self.pick(workflows, default, label="工作流")
+            if default
+            else next(iter(workflows), None)
+        )
+        if not chosen:
+            raise ServiceError("没有可用于试画的工作流，请先在 Mio 导入工作流。")
+        return self._admit(
+            actor,
+            instance.id,
+            kind="trial",
+            title="试画 · " + prompt[:40],
+            body={"workflow_id": chosen["id"], "prompt": prompt},
+            selection={"workflowTitle": chosen["title"]},
+            delivery={"notify_mode": "images"},
+            text=prompt,
+        )
+
+    async def works(self, *, actor: Actor, instance_id=None, query="", limit=30):
+        instance = self.route(actor, instance_id)
+        rows = await self.resources.works(self.instances.get(instance.id), query=query, limit=limit)
+        return [{**item, "instance_id": instance.id} for item in rows]
+
+    async def export_work(self, work, *, actor: Actor, fmt=None, layout=None, options=None):
+        self.route(actor, work.get("instance_id"))
+        fmt = fmt or self.export_format(actor.session)
+        return self._file_view(
+            await self._file(work, fmt=fmt, layout=layout, options=options, umo=actor.session),
+            fmt,
+        )
+
+    async def send_work(self, work, umo, *, actor: Actor, fmt=None, layout=None, options=None):
+        self.route(actor, work.get("instance_id"))
+        self._authorize_destination(actor, umo)
+        fmt = fmt or self.export_format(umo)
+        file = await self._file(work, fmt=fmt, layout=layout, options=options, umo=umo)
+        size = _integer(self._policy_value(umo, "delivery", "max_file_mb", 50), 50, 1, 200)
+        await self.delivery.send_file(umo, file, max_size=size * 1024**2, as_image=fmt == "strip")
+        return self._file_view(file, fmt)
+
+    async def _episode(self, record):
+        if not record.get("episode_id"):
+            raise ServiceError("该任务尚未生成分集。", status=409)
+        client = self.instances.get(record["instance_id"])
+        episode = await client.call("get_episode", path_params={"episode_id": record["episode_id"]})
+        if not isinstance(episode, dict) or episode.get("id") != record["episode_id"]:
+            raise ServiceError("无法确认 Mio 的分集信息。", status=502)
+        panels = sorted(_entries(episode.get("panels")), key=lambda panel: panel["order"])
+        return client, episode, panels
+
+    @staticmethod
+    def _panel(panels, number):
+        if type(number) is not int or not 1 <= number <= len(panels):
+            raise ServiceError("没有这幕。请查看任务详情中的分幕编号。", status=404)
+        return panels[number - 1]
+
+    def _check_episode_idle(self, record):
+        if any(
+            item["episode_id"] == record["episode_id"]
+            and item["instance_id"] == record["instance_id"]
+            for item in self.store.pending()
+            if item.get("episode_id")
+        ):
+            raise ServiceError("这个分集正在进行其他操作，请等待完成后再试。", status=409)
+
+    async def redraw(self, record, panel_number, prompt=None, *, actor: Actor):
+        self.governance.authorize_task(actor, record)
+        text = str(prompt or "").strip()
+        if len(text) > 8000:
+            raise ServiceError("新的提示词不能超过 8000 字。")
+        async with self._controls:
+            self._check_episode_idle(record)
+            client, episode, panels = await self._episode(record)
+            panel = self._panel(panels, panel_number)
+            series = await client.call(
+                "get_series", path_params={"series_id": episode["series_id"]}
+            )
+            generation = series.get("generation") or {}
+            profile_id = (panel.get("overrides") or {}).get("profile_id")
+            if not profile_id and generation:
+                cloud = bool((generation.get("profile") or {}).get("cloud_shape"))
+            else:
+                profile_id = profile_id or series.get("default_profile_id") or "profile_default"
+                cloud = await self._uses_cloud_profile(client, profile_id)
+            return self._admit(
+                actor,
+                record["instance_id"],
+                kind="redraw",
+                title=f"重画 · 第 {panel_number} 幕",
+                body={"panel_id": panel["id"], "revision": episode["revision"], "prompt": text},
+                series_id=episode["series_id"],
+                episode_id=episode["id"],
+                text=text,
+                cloud=cloud,
+            )
+
+    async def pick_take(self, record, panel_number, take_number, *, actor: Actor):
+        self.governance.authorize_task(actor, record)
+        async with self._controls:
+            self._check_episode_idle(record)
+            client, episode, panels = await self._episode(record)
+            panel = self._panel(panels, panel_number)
+            takes = [
+                take
+                for take in _entries(episode.get("takes"))
+                if take.get("panel_id") == panel["id"]
+                and take.get("status") in {"candidate", "adopted"}
+            ]
+            if type(take_number) is not int or not 1 <= take_number <= len(takes):
+                raise ServiceError("没有这个候选图。请检查分幕候选编号。", status=404)
+            await client.call(
+                "adopt_take",
+                path_params={"episode_id": episode["id"], "take_id": takes[take_number - 1]["id"]},
+            )
+        self.store.audit(
+            "adopt_take",
+            actor_id=actor.scoped_id,
+            instance_id=record["instance_id"],
+            task_id=record["id"],
+        )
+        return f"第 {panel_number} 幕已采纳候选图 {take_number}。"
+
+    async def qa(self, record, *, actor: Actor):
+        self.governance.authorize_task(actor, record)
+        async with self._controls:
+            self._check_episode_idle(record)
+            _, episode, _ = await self._episode(record)
+            if not _entries(episode.get("takes")):
+                raise ServiceError("这个分集还没有可质检的图片。", status=409)
+            return self._admit(
+                actor,
+                record["instance_id"],
+                kind="qa",
+                title=f"质检 · {record['title']}",
+                body={},
+                episode_id=episode["id"],
+                series_id=episode["series_id"],
+                delivery={"notify_mode": "summary"},
+            )
+
+    def quota(self, actor: Actor):
+        self.governance.require(actor, "read")
+        usage = self.store.quota(actor.scoped_id)
+        limit = self.cfg("governance", "daily_limit", 8)
+        cooldown = self.cfg("governance", "cooldown_seconds", 10)
+        remaining = max(0, limit - usage["used"]) if limit else None
+        cloud_limit = self.cfg("governance", "cloud_daily_limit", 3)
+        wait = max(0, int((usage["last_at"] or 0) + cooldown - time.time() + 0.999))
+        return {
+            **usage,
+            "daily_limit": limit,
+            "remaining": remaining,
+            "cloud_remaining": max(0, cloud_limit - usage["cloud_used"]) if cloud_limit else None,
+            "cooldown": wait,
+            "cooldown_remaining": wait,
+            "queue_length": self.store.queue_length(),
+        }
+
+    def set_session_policy(self, actor: Actor, umo, changes):
+        self.governance.authorize_session_config(actor, umo)
+        return self.settings.set_session_policy(umo, changes)
 
     def _visible(self, actor, limit, *, instance_id=None):
         role = self.governance.require(actor, "read")
@@ -456,8 +719,8 @@ class MioStudioService:
                 **self._job_stats(job),
                 **({"finished_at": time.time()} if status in FINAL_STATES else {}),
             )
-        except MioApiError as exc:
-            status = "interrupted" if exc.retryable else "failed"
+        except (MioApiError, ServiceError) as exc:
+            status = "interrupted" if getattr(exc, "retryable", False) else "failed"
             updated = self.store.update(
                 task_id,
                 expected_status="dispatching",
@@ -489,6 +752,69 @@ class MioStudioService:
             return {"job": job}
         if record["kind"] == "workshop":
             return await client.call("create_workshop_task", body=body)
+        if record["kind"] == "trial":
+            workflow = body.pop("workflow_id")
+            return await client.call(
+                "trial_workflow", path_params={"workflow_id": workflow}, body=body
+            )
+        if record["kind"] == "draw":
+            series_id = record["series_id"]
+            if not series_id:
+                series = await client.call("create_series", body={"title": record["title"]})
+                series_id = series["id"]
+                self.store.update(record["id"], expected_status="dispatching", series_id=series_id)
+            path = {"series_id": series_id}
+            episode = await client.call(
+                "generate_episode",
+                path_params=path,
+                body={"sentence": body["idea"], "title": record["title"]},
+                timeout=max(120, client.timeout),
+            )
+            self.store.update(record["id"], expected_status="dispatching", episode_id=episode["id"])
+            await self._verify_draw_profiles(
+                client, episode, body["profile_id"], body["cloud_allowed"]
+            )
+            job = await client.call(
+                "render_episode",
+                path_params={"episode_id": episode["id"]},
+                body={
+                    "profile_id": body["profile_id"],
+                    "candidates": body["candidates"],
+                    "adopt_first": True,
+                    "qa": body["candidates"] > 1,
+                    "idempotency_key": body["idempotency_key"],
+                },
+            )
+            return {"series": {"id": series_id}, "episode": episode, "job": job}
+        if record["kind"] == "redraw":
+            episode_path = {"episode_id": record["episode_id"]}
+            if body.get("prompt"):
+                await client.call(
+                    "patch_panel",
+                    path_params={**episode_path, "panel_id": body["panel_id"]},
+                    body={
+                        "changes": {"overrides": {"raw_prompt": body["prompt"]}},
+                        "revision": body["revision"],
+                    },
+                )
+            job = await client.call(
+                "render_episode",
+                path_params=episode_path,
+                body={
+                    "panel_ids": [body["panel_id"]],
+                    "candidates": 1,
+                    "adopt_replace": True,
+                    "idempotency_key": body["idempotency_key"],
+                },
+            )
+            return {"job": job}
+        if record["kind"] == "qa":
+            job = await client.call(
+                "qa_episode",
+                path_params={"episode_id": record["episode_id"]},
+                body={"auto_adopt": False, "idempotency_key": body["idempotency_key"]},
+            )
+            return {"job": job}
         raise ServiceError("无法识别当前任务类型。")
 
     async def _refresh(self, record):
@@ -635,7 +961,16 @@ class MioStudioService:
             raise ServiceError("任务还没有生成可取件的分集。", status=409)
         client = self.instances.get(record["instance_id"])
         fmt = fmt or self.export_format(umo)
-        template = layout or self._policy_value(umo, "export", "layout_id", "")
+        template = (
+            layout
+            or (record.get("delivery") or {}).get("layout_id")
+            or self._policy_value(
+                umo,
+                "export",
+                "layout_id",
+                "",
+            )
+        )
         if template and template != "0":
             cat = await self.resources.catalog(client)
             template = self.pick(cat.get("layouts", []), template, label="导出模板")["id"]
@@ -732,6 +1067,14 @@ class MioStudioService:
         )
         if mode == "silent":
             return
+        if status == "complete" and record.get("kind") == "qa":
+            try:
+                _, episode, panels = await self._episode(record)
+                report = self._qa_text(episode, panels)
+            except (MioApiError, ServiceError) as exc:
+                report = f"质检已完成，但暂时无法读取报告：{exc.message}"
+            await self.delivery.send_text(umo, f"质检任务 #{view['num']}\n{report}")
+            return
         if status != "complete" or mode == "summary":
             await self.delivery.send_text(umo, format_task(view))
             return
@@ -760,6 +1103,25 @@ class MioStudioService:
     def _schedule_notification(self, record):
         if record["status"] in FINAL_STATES and not record.get("notified"):
             self._spawn(self._notify(record), wake=False)
+
+    @staticmethod
+    def _qa_text(episode, panels):
+        results = {}
+        for take in _entries(episode.get("takes")):
+            qa = take.get("qa")
+            if not isinstance(qa, dict) or type(qa.get("score")) not in {float, int}:
+                continue
+            if take["panel_id"] not in results or qa["score"] > results[take["panel_id"]]["score"]:
+                results[take["panel_id"]] = qa
+        lines = []
+        for number, panel in enumerate(panels[:25], 1):
+            qa = results.get(panel["id"])
+            if not qa:
+                continue
+            issues = "；".join(str(issue)[:100] for issue in (qa.get("issues") or [])[:2])
+            issues = re.sub(r"\bmio_[A-Za-z0-9_-]{12,}\b", "[已隐藏]", issues)
+            lines.append(f"第 {number} 幕：{qa['score']:.0%} · {issues or '未发现明显问题'}")
+        return "\n".join(lines) or "Mio 暂未返回可用的评分。请确认已配置视觉质检模型。"
 
     def _task_done(self, task, wake):
         self._background.discard(task)

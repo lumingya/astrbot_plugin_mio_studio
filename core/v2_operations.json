@@ -125,6 +125,10 @@
       "POST",
       "/episodes/{episode_id}/panels/batch-delete"
     ],
+    "delete_profile": [
+      "DELETE",
+      "/profiles/{profile_id}"
+    ],
     "delete_webhook": [
       "DELETE",
       "/webhooks/{hook_id}"
@@ -232,6 +236,10 @@
     "get_preset": [
       "GET",
       "/workshop/presets/{preset_id}"
+    ],
+    "get_profile": [
+      "GET",
+      "/profiles/{profile_id}"
     ],
     "get_queue": [
       "GET",
@@ -444,6 +452,10 @@
     "preview_variables": [
       "POST",
       "/series/{series_id}/variables/preview"
+    ],
+    "put_profile": [
+      "PUT",
+      "/profiles/{profile_id}"
     ],
     "qa_episode": [
       "POST",

@@ -15,6 +15,8 @@ async def until(predicate):
 
 
 class Mio:
+    timeout = 60
+
     def __init__(self):
         self.calls = []
         self.release = asyncio.Event()
@@ -35,6 +37,14 @@ class Mio:
                 "state": "completed" if self.finished else "running",
                 "items": [{"state": "complete" if self.finished else "running"}],
             }
+        if operation == "get_profile":
+            return {"id": kwargs["path_params"]["profile_id"], "cloud_shape": False}
+        if operation == "create_series":
+            return {"id": "draw-series"}
+        if operation == "generate_episode":
+            return {"id": "draw-episode", "panels": [{"id": "draw-panel", "order": 0}]}
+        if operation == "render_episode":
+            return {"id": "draw-job", "state": "running", "items": []}
         raise AssertionError(operation)
 
 
@@ -119,3 +129,21 @@ async def test_idle_queue_stops_poller(setup):
     await service.start()
     await until(lambda: service._poller.done())
     assert not server.calls
+
+
+async def test_draw_writes_series_episode_and_render_job_before_delivery(setup):
+    service, server, _ = setup
+    creator = Actor("artist", session="qq:GroupMessage:atelier")
+    task = await service.create_draw("凌晨的火车停在海面上", actor=creator, candidates=2)
+    await until(lambda: service.store.get(task["id"])["status"] == "running")
+    record = service.store.get(task["id"])
+    assert (record["series_id"], record["episode_id"], record["job_id"]) == (
+        "draw-series",
+        "draw-episode",
+        "draw-job",
+    )
+    draw = next(body for op, body in server.calls if op == "generate_episode")
+    assert draw["body"]["sentence"] == "凌晨的火车停在海面上"
+    render = next(body for op, body in server.calls if op == "render_episode")
+    assert render["body"]["candidates"] == 2
+    assert render["body"]["qa"] is True

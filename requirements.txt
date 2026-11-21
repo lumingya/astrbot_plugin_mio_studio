@@ -1,1 +1,2 @@
 aiohttp>=3.9
+# Optional for illustrated chat cards: Pillow>=10.4

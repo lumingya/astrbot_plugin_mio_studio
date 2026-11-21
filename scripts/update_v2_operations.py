@@ -12,6 +12,7 @@ DISCOVERY = {
     "/settings/models",
     "/image-adapters",
     "/image-channels",
+    "/profiles/{profile_id}",
     "/comfy-adapters",
     "/assets/{asset_id}",
 }
