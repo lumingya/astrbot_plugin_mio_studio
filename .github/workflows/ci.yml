@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest -q
+
+  panel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web-src/package-lock.json
+      - run: npm ci
+        working-directory: web-src
+      - run: npm run typecheck
+        working-directory: web-src
+      - run: npm run build
+        working-directory: web-src
+      - name: Require current checked-in panel assets
+        run: |
+          git diff --exit-code -- pages/mio-studio/
+          test -z "$(git status --porcelain --untracked-files=all -- pages/mio-studio/)"

@@ -1,7 +1,7 @@
 name: astrbot_plugin_mio_studio
 display_name: Mio 绘页
 author: arena-agent
-version: 2.0.0
-desc: 通过开放 API v2 连接 Mio · 绘页，支持在聊天中装配分镜、追踪出图和发送成品，并在独立控制面板管理配置。
-short_desc: 用编号调度 Mio · 绘页 生成画册并取回成品
+version: 3.0.0
+desc: 通过 Mio 开放 API v2 将聊天灵感转为漫画，支持工坊装配、试画、候选定稿、质检、成品导出和多实例控制面板。
+short_desc: 从一句灵感到漫画、画册与聊天交付
 astrbot_version: ">=4.27,<5"

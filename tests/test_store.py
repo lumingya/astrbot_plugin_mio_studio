@@ -159,6 +159,19 @@ def test_remote_ids_are_scoped_and_final_notification_has_one_claimant(tmp_path)
     assert not peer.get("two")["notified"]
 
 
+def test_failed_notification_attempt_can_be_claimed_again(tmp_path):
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    store.add({"id": "retry", "status": "complete", "notified": False})
+    assert store.claim_notification("retry", "complete")
+    assert not store.get("retry")["notified"]
+    assert store.finish_notification("retry", "complete", delivered=False, retry_after=0)
+    assert store.get("retry")["notification_attempts"] == 1
+    assert store.claim_notification("retry", "complete")
+    assert store.finish_notification("retry", "complete", delivered=True)
+    assert store.get("retry")["notified"]
+    assert not store.pending_notifications()
+
+
 def test_preferences_audit_and_webhook_replay_persist_on_reopen(tmp_path):
     path = tmp_path / "tasks.sqlite3"
     store = TaskStore(path)

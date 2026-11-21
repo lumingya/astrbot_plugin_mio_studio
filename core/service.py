@@ -254,7 +254,7 @@ class MioStudioService:
                     error="提交结果未知。请到 Mio 核对是否已接单，再决定是否重试。",
                     finished_at=time.time(),
                 )
-        for task in self.store.list_tasks(limit=400):
+        for task in self.store.pending_notifications(limit=400, recover_claims=True):
             self._schedule_notification(task)
         self.ensure_poller()
 
@@ -437,6 +437,7 @@ class MioStudioService:
             "sender_name": actor.name,
             "selection": selection or {},
             "request": body,
+            "cloud": policy.cloud,
             "delivery": delivery or {},
             "series_id": series_id,
             "episode_id": episode_id,
@@ -478,7 +479,10 @@ class MioStudioService:
                 "presetTitles": [p["title"] for p in selection["presets"]],
                 "channelTitle": (selection["channel"] or {}).get("title"),
             },
-            cloud=bool((body.get("generation") or {}).get("cloud_channel_id")),
+            cloud=bool(
+                (selection.get("channel") or {}).get("cloud")
+                or (body.get("generation") or {}).get("cloud_channel_id")
+            ),
             text=title,
         )
 
@@ -1037,12 +1041,34 @@ class MioStudioService:
         path = {"job_id": job_id}
         if action == "resume" and status in {"paused", "failed", "cancelled"}:
             source = (record.get("request") or {}).get("generation") or {}
-            self.governance.policy(
-                actor,
-                cloud=self.instances.resolve(record["instance_id"]).cloud
-                or bool(source.get("cloud_channel_id")),
+            request = record.get("request") or {}
+            cloud = bool(
+                record.get("cloud")
+                or self.instances.resolve(record["instance_id"]).cloud
+                or source.get("cloud_channel_id")
             )
-            if not self.store.claim_control(task_id, status, self.governance.global_limit):
+            policy = self.governance.policy(
+                actor,
+                cloud=cloud,
+                text=" ".join(str(request.get(key) or "") for key in ("idea", "prompt", "title")),
+            )
+            credit = status in {"failed", "cancelled"}
+            try:
+                claimed = self.store.claim_control(
+                    task_id,
+                    status,
+                    self.governance.global_limit,
+                    actor_key=actor.scoped_id,
+                    daily_limit=policy.daily_limit,
+                    user_limit=policy.user_active_limit,
+                    cooldown=policy.cooldown_seconds,
+                    cloud=policy.cloud,
+                    cloud_limit=policy.cloud_daily_limit,
+                    charge=credit,
+                )
+            except AdmissionDenied as exc:
+                raise ServiceError(exc.message, code=exc.code, status=429) from None
+            if not claimed:
                 raise ServiceError("生成队列已满，请等正在运行的任务结束后再继续。", status=429)
             try:
                 op = "resume_job" if status == "paused" else "retry_job"
@@ -1193,6 +1219,7 @@ class MioStudioService:
             return
         umo = record.get("umo")
         if not umo:
+            self.store.finish_notification(task_id, status, delivered=True)
             return
         view = self.merge_view(record, None)
         mode = (record.get("delivery") or {}).get("notify_mode") or self._policy_value(
@@ -1202,43 +1229,90 @@ class MioStudioService:
             "summary",
         )
         if mode == "silent":
+            self.store.finish_notification(task_id, status, delivered=True)
             return
-        if status == "complete" and record.get("kind") == "qa":
-            try:
+        delivered = False
+        try:
+            if status == "complete" and record.get("kind") == "qa":
                 _, episode, panels = await self._episode(record)
                 report = self._qa_text(episode, panels)
-            except (MioApiError, ServiceError) as exc:
-                report = f"质检已完成，但暂时无法读取报告：{exc.message}"
-            await self.delivery.send_text(umo, f"质检任务 #{view['num']}\n{report}")
-            return
-        if status != "complete" or mode == "summary":
-            await self.delivery.send_text(umo, format_task(view))
-            return
-        actor = Actor.panel()
-        try:
-            if mode == "qa_then_send":
+                delivered = await self.delivery.send_text(umo, f"质检任务 #{view['num']}\n{report}")
+            elif status != "complete" or mode == "summary":
+                delivered = await self.delivery.send_text(umo, format_task(view))
+            elif mode == "qa_then_send":
                 client = self.client_for_task(record)
+                episode = await client.call(
+                    "get_episode", path_params={"episode_id": record["episode_id"]}
+                )
+                takes = [
+                    item
+                    for item in _entries((episode or {}).get("takes"))
+                    if item.get("job_id") == record.get("job_id")
+                    and item.get("status") in {"candidate", "adopted"}
+                    and isinstance(item.get("id"), str)
+                ]
+                take_ids = [item["id"] for item in takes[:400]]
+                if not take_ids:
+                    raise ServiceError(
+                        "本次生成没有可质检的候选图；请先检查任务详情。",
+                        code="qa_candidates_missing",
+                        status=409,
+                    )
                 job = await client.call(
                     "qa_episode",
                     path_params={"episode_id": record["episode_id"]},
-                    body={"auto_adopt": True, "idempotency_key": "astrbot:notify-qa:" + task_id},
+                    body={
+                        "auto_adopt": True,
+                        "take_ids": take_ids,
+                        "idempotency_key": "astrbot:notify-qa:" + task_id,
+                    },
                 )
                 await self.delivery.wait_job(client, job["id"])
-            if mode in {"images", "qa_then_send"}:
-                await self.send_images(record, umo, actor=actor)
+                delivered = (await self.send_images(record, umo, actor=Actor.panel())) > 0
+            elif mode == "images":
+                delivered = (await self.send_images(record, umo, actor=Actor.panel())) > 0
             elif mode in {"strip", "export"}:
                 await self.send_export(
-                    record, umo, actor=actor, fmt="strip" if mode == "strip" else None
+                    record,
+                    umo,
+                    actor=Actor.panel(),
+                    fmt="strip" if mode == "strip" else None,
                 )
+                delivered = True
         except (MioApiError, ServiceError) as exc:
-            await self.delivery.send_text(
+            delivered = await self.delivery.send_text(
                 umo,
                 f"任务 #{record['num']} 已完成，自动交付失败：{exc.message}。可用 /mio get 取件。",
             )
+        finally:
+            self.store.finish_notification(
+                task_id, status, delivered=delivered, retry_after=30 if not delivered else 0
+            )
+            if not self._closing and not delivered:
+                failed = self.store.get(task_id)
+                if failed:
+                    self._schedule_notification(failed)
 
     def _schedule_notification(self, record):
-        if record["status"] in FINAL_STATES and not record.get("notified"):
+        if (
+            record["status"] in FINAL_STATES
+            and not record.get("notified")
+            and not record.get("notification_abandoned")
+            and int(record.get("notification_attempts") or 0) < 5
+        ):
+            retry_at = record.get("notification_retry_at")
+            if retry_at and retry_at > time.time():
+                delay = min(300, retry_at - time.time())
+                asyncio.get_running_loop().call_later(delay, self._retry_notification, record["id"])
+                return
             self._spawn(self._notify(record), wake=False)
+
+    def _retry_notification(self, task_id):
+        if self._closing:
+            return
+        record = self.store.get(task_id)
+        if record:
+            self._schedule_notification(record)
 
     @staticmethod
     def _qa_text(episode, panels):

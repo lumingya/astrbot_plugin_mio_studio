@@ -534,8 +534,23 @@ class TaskStore:
             self._write_task(db, task)
             return task
 
-    def claim_control(self, task_id: str, status: str, global_limit: int) -> bool:
-        """Reserve capacity for resuming or retrying an existing remote job."""
+    def claim_control(
+        self,
+        task_id: str,
+        status: str,
+        global_limit: int,
+        *,
+        actor_key: str = "",
+        daily_limit: int = 0,
+        user_limit: int = 0,
+        cooldown: int = 0,
+        cloud: bool = False,
+        cloud_limit: int = 0,
+        charge: bool = False,
+        now: float | None = None,
+    ) -> bool:
+        """Atomically reserve restart capacity and any new generation credit."""
+        now = _now(now)
         if status in PENDING_STATES:
             return False
         with self._write() as db:
@@ -549,11 +564,81 @@ class TaskStore:
             )
             if task is None:
                 return False
+            owner_key = str(task.get("actor_key") or "")
+            if user_limit and owner_key:
+                active = db.execute(
+                    f"""SELECT count(*) FROM tasks WHERE actor_key=?
+                        AND status IN ({_placeholders(PENDING_STATES)})""",
+                    (owner_key, *PENDING_STATES),
+                ).fetchone()[0]
+                if active >= user_limit:
+                    raise AdmissionDenied(
+                        "user_concurrency", "你的任务仍在排队或生成，请先等它完成。"
+                    )
+            if charge:
+                quota = self._quota(db, actor_key, now)
+                if daily_limit and quota["used"] >= daily_limit:
+                    raise AdmissionDenied("daily_quota", "今天的创作额度已用完，明天再来吧。")
+                if cloud and cloud_limit and quota["cloud_used"] >= cloud_limit:
+                    raise AdmissionDenied(
+                        "cloud_quota", "今天的云端生成额度已用完，请改用本地实例。"
+                    )
+                if cooldown and quota["last_at"] is not None:
+                    retry = math.ceil(quota["last_at"] + cooldown - now)
+                    if retry > 0:
+                        raise AdmissionDenied(
+                            "cooldown",
+                            f"请再等 {retry} 秒再提交。",
+                            retry_after=retry,
+                        )
+                db.execute(
+                    "INSERT INTO quota(actor_key, day, created_at, cloud) VALUES (?, ?, ?, ?)",
+                    (
+                        actor_key,
+                        datetime.fromtimestamp(now).date().isoformat(),
+                        now,
+                        int(cloud),
+                    ),
+                )
             task.update(status="dispatching", started_at=time.time())
             self._write_task(db, task)
             return True
 
     def claim_notification(self, task_id: str, status: str) -> bool:
+        now = time.time()
+        with self._write() as db:
+            task = _restored(
+                db.execute(
+                    "SELECT num, payload FROM tasks WHERE id=? AND status=?",
+                    (task_id, status),
+                ).fetchone()
+            )
+            if not task or task.get("notified"):
+                return False
+            claim = task.get("notification_claimed_at")
+            retry = task.get("notification_retry_at")
+            if (type(claim) in (int, float) and now - claim < 60) or (
+                type(retry) in (int, float) and now < retry
+            ):
+                return False
+            attempts = max(0, int(task.get("notification_attempts") or 0))
+            if attempts >= 5:
+                task.pop("notification_claimed_at", None)
+                task.pop("notification_retry_at", None)
+                task["notification_abandoned"] = True
+                self._write_task(db, task)
+                return False
+            task.update(
+                notification_claimed_at=now,
+                notification_attempts=attempts + 1,
+            )
+            self._write_task(db, task)
+            return True
+
+    def finish_notification(
+        self, task_id: str, status: str, *, delivered: bool, retry_after: int = 30
+    ) -> bool:
+        now = time.time()
         with self._write() as db:
             task = _restored(
                 db.execute(
@@ -561,11 +646,44 @@ class TaskStore:
                     (task_id, status),
                 ).fetchone()
             )
-            if task is None:
+            if task is None or not task.get("notification_claimed_at"):
                 return False
-            task["notified"] = True
+            task.pop("notification_claimed_at", None)
+            if delivered:
+                task["notified"] = True
+                task.pop("notification_retry_at", None)
+            elif retry_after > 0:
+                task["notification_retry_at"] = now + retry_after
+            else:
+                task.pop("notification_retry_at", None)
             self._write_task(db, task)
             return True
+
+    def pending_notifications(
+        self, limit: int = 400, *, recover_claims: bool = False
+    ) -> list[dict[str, Any]]:
+        with self._write() as db:
+            rows = [
+                _restored(row)
+                for row in db.execute(
+                    "SELECT num, payload FROM tasks WHERE notified=0 ORDER BY num DESC LIMIT ?",
+                    (max(0, min(400, limit)),),
+                )
+            ]
+            if recover_claims:
+                for task in rows:
+                    claim = task.get("notification_claimed_at") if task else None
+                    if type(claim) in (int, float) and time.time() - claim >= 60:
+                        task.pop("notification_claimed_at", None)
+                        self._write_task(db, task)
+        return [
+            task
+            for task in rows
+            if task
+            and task.get("status") in {"complete", "failed", "cancelled", "interrupted", "missing"}
+            and not task.get("notification_abandoned")
+            and int(task.get("notification_attempts") or 0) < 5
+        ]
 
     def audit(
         self,
