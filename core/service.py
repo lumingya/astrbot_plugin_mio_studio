@@ -1,39 +1,41 @@
-"""Service layer shared by the chat commands and the control-panel web API.
-
-Responsibilities:
-* configuration access (+ writes from the panel, persisted through AstrBotConfig)
-* numbered resource catalogue from Mio (workflows / storyboards / presets / channels / layouts)
-* task creation (Mio production ``assemble`` + ``start``) and bookkeeping
-* progress polling and completion notifications (strategy selectable in the panel)
-* result retrieval: server-side export (html/zip/pdf) or frame images
-"""
+"""Application service shared by chat, panel and the durable task queue."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-import astrbot.api.message_components as Comp
-from astrbot.api.event import MessageChain
+from .config import Settings
+from .delivery import FORMATS, MioDelivery
+from .governance import Actor, Governance
+from .instances import InstanceConfig, InstanceRegistry
+from .resources import Resources
+from .store import ACTIVE_STATES, AdmissionDenied, TaskStore
+from .textfmt import format_task
+from .v2_client import DownloadedFile, MioApiError
+from .webhook import (
+    WebhookEvent,
+    WebhookListener,
+    register_webhook,
+    test_webhook,
+    webhook_deliveries,
+)
 
-from .mio_client import MioClient, MioError
-from .store import TaskStore
-from .textfmt import format_task, progress_of, status_key
-
-NOTIFY_MODES = ("images", "summary", "export", "silent")
-FORMATS = ("html", "zip", "pdf")
-IMAGE_PROFILES = ("auto", "archive", "clean", "publish")
-SEND_MODES = ("auto", "forward", "separate", "batch")
-FINAL_STATES = {"complete", "failed", "interrupted", "cancelled"}
-FORWARD_PLATFORMS = {"aiocqhttp", "napcat", "llonebot", "lagrange"}
-CATALOG_TTL = 15.0
-TASKS_TTL = 2.0
-MAX_EXPORT_FILES = 40
+NOTIFY_MODES = ("summary", "images", "strip", "export", "qa_then_send", "silent")
+FINAL_STATES = {"complete", "failed", "cancelled", "interrupted", "missing"}
+JOB_STATES = {
+    "queued": "queued_remote",
+    "running": "running",
+    "paused": "paused",
+    "blocked": "interrupted",
+    "completed": "complete",
+    "failed": "failed",
+    "canceled": "cancelled",
+}
+DISPLAY_STATES = {"queued": "ready", "queued_remote": "ready", "dispatching": "preparing"}
 
 
 class ServiceError(Exception):
@@ -44,970 +46,813 @@ class ServiceError(Exception):
         self.status = status
 
 
-def _int(value: Any, default: int, lo: int, hi: int) -> int:
+def _integer(value: Any, default: int, lo: int, hi: int) -> int:
     try:
         return max(lo, min(hi, int(value)))
-    except (TypeError, ValueError):
+    except (ValueError, TypeError, OverflowError):
         return default
 
 
-def _safe_filename(name: str) -> str:
-    name = re.sub(r"[\\/:*?\"<>|\r\n\t]+", "_", str(name or "")).strip(" .")
-    return name[:120] or "export"
+def _entries(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        value = value.get("items")
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
 class MioStudioService:
     def __init__(self, context, config, data_dir: Path, logger) -> None:
-        self.context = context
-        self.config = config
-        self.data_dir = data_dir
+        self.store = TaskStore(data_dir / "tasks.sqlite3")
+        self.settings = Settings(config, self.store)
+        self.governance = Governance(config)
+        self.instances = InstanceRegistry(self.settings.primary())
+        self.resources = Resources()
+        self.delivery = MioDelivery(context, data_dir, logger)
         self.logger = logger
-        self.client = MioClient()
-        self.store = TaskStore(data_dir / "tasks.json")
-        self._catalog: dict[str, Any] | None = None
-        self._catalog_at = 0.0
-        self._catalog_lock = asyncio.Lock()
-        self._tasks_cache: list[dict[str, Any]] = []
-        self._tasks_at = 0.0
-        self._poller: asyncio.Task | None = None
+        self._wake = asyncio.Event()
         self._closing = False
-        self.reload_config()
-
-    # ----------------------------------------------------------------- config
-    def cfg(self, section: str, key: str, default: Any = None) -> Any:
-        sec = self.config.get(section) if isinstance(self.config, dict) else None
-        if isinstance(sec, dict) and key in sec and sec[key] is not None:
-            return sec[key]
-        return default
-
-    def reload_config(self) -> None:
-        self.client.configure(
-            base_url=str(
-                self.cfg("mio", "base_url", "http://127.0.0.1:8777") or "http://127.0.0.1:8777"
-            ),
-            token=str(self.cfg("mio", "api_token", "") or ""),
-            timeout=float(_int(self.cfg("mio", "request_timeout", 60), 60, 5, 600)),
+        self._poller: asyncio.Task | None = None
+        self._background: set[asyncio.Task] = set()
+        self._controls = asyncio.Lock()
+        self._hook_hits: set[str] = set()
+        self._hook_address: tuple[str, int] | None = None
+        self.listener = WebhookListener(
+            self._hook_secret, self.store.remember_delivery, self._hook_event
         )
 
+    def cfg(self, section, key, default=None):
+        return self.settings.cfg(section, key, default)
+
+    def session_policy(self, umo: str) -> dict[str, Any]:
+        return self.store.session_overrides(umo) if umo else {}
+
+    def _policy_value(self, umo, section, key, default=None):
+        return self.session_policy(umo).get(key, self.cfg(section, key, default))
+
     def config_view(self) -> dict[str, Any]:
-        token = str(self.cfg("mio", "api_token", "") or "")
-        return {
-            "mio": {
-                "base_url": self.client.base_url,
-                "api_token_set": bool(token),
-                "api_token_masked": (token[:4] + "…" + token[-4:])
-                if len(token) >= 12
-                else ("已设置" if token else ""),
-                "request_timeout": _int(self.cfg("mio", "request_timeout", 60), 60, 5, 600),
-            },
-            "defaults": {
-                "channel_id": str(self.cfg("defaults", "channel_id", "") or ""),
-                "workflow_id": str(self.cfg("defaults", "workflow_id", "") or ""),
-                "preset_ids": self.default_preset_ids(),
-                "title_template": str(
-                    self.cfg("defaults", "title_template", "{story} · {preset}")
-                    or "{story} · {preset}"
-                ),
-                "seed_mode": str(self.cfg("defaults", "seed_mode", "random") or "random"),
-                "seed": _int(self.cfg("defaults", "seed", 1), 1, 0, 2**32 - 1),
-                "concurrency": _int(self.cfg("defaults", "concurrency", 0), 0, 0, 8),
-            },
-            "export": {
-                "layout_id": str(self.cfg("export", "layout_id", "") or ""),
-                "format": self.export_format(),
-                "image_profile": self.image_profile(),
-                "show_captions": bool(self.cfg("export", "show_captions", True)),
-                "show_prompts": bool(self.cfg("export", "show_prompts", False)),
-                "theme_color": str(self.cfg("export", "theme_color", "") or ""),
-                "signature": str(self.cfg("export", "signature", "") or ""),
-            },
-            "delivery": {
-                "notify_mode": self.notify_mode(),
-                "send_mode": str(self.cfg("delivery", "send_mode", "auto") or "auto"),
-                "include_captions": bool(self.cfg("delivery", "include_captions", True)),
-                "max_images": _int(self.cfg("delivery", "max_images", 30), 30, 1, 200),
-                "poll_interval": _int(self.cfg("delivery", "poll_interval", 5), 5, 2, 120),
-                "forward_sender_name": str(
-                    self.cfg("delivery", "forward_sender_name", "Mio 绘页") or "Mio 绘页"
-                ),
-                "forward_sender_uin": str(
-                    self.cfg("delivery", "forward_sender_uin", "10000") or "10000"
-                ),
-            },
-            "permissions": {
-                "admin_only": bool(self.cfg("permissions", "admin_only", False)),
-                "allowed_sessions": list(self.cfg("permissions", "allowed_sessions", []) or []),
-            },
-        }
+        return self.settings.view()
 
-    ALLOWED_KEYS = {
-        "mio": {"base_url": str, "api_token": str, "request_timeout": int},
-        "defaults": {
-            "channel_id": str,
-            "workflow_id": str,
-            "preset_ids": str,
-            "title_template": str,
-            "seed_mode": str,
-            "seed": int,
-            "concurrency": int,
-        },
-        "export": {
-            "layout_id": str,
-            "format": str,
-            "image_profile": str,
-            "show_captions": bool,
-            "show_prompts": bool,
-            "theme_color": str,
-            "signature": str,
-        },
-        "delivery": {
-            "notify_mode": str,
-            "send_mode": str,
-            "include_captions": bool,
-            "max_images": int,
-            "poll_interval": int,
-            "forward_sender_name": str,
-            "forward_sender_uin": str,
-        },
-        "permissions": {"admin_only": bool, "allowed_sessions": list},
-    }
+    def export_format(self, umo: str = "") -> str:
+        fmt = self._policy_value(umo, "export", "format", "html")
+        return fmt if fmt in FORMATS else "html"
 
-    def update_config(self, changes: dict[str, Any]) -> dict[str, Any]:
-        """Apply a partial ``{section: {key: value}}`` update and persist it."""
-        if not isinstance(changes, dict):
-            raise ServiceError("配置格式不正确")
-        touched = 0
-        for section, values in changes.items():
-            allowed = self.ALLOWED_KEYS.get(section)
-            if not allowed or not isinstance(values, dict):
-                continue
-            target = self.config.setdefault(section, {}) if isinstance(self.config, dict) else None
-            if not isinstance(target, dict):
-                continue
-            for key, value in values.items():
-                kind = allowed.get(key)
-                if kind is None:
-                    continue
-                if kind is bool:
-                    value = bool(value)
-                elif kind is int:
-                    try:
-                        value = int(value)
-                    except (TypeError, ValueError):
-                        raise ServiceError(f"{section}.{key} 必须是整数")
-                elif kind is list:
-                    if isinstance(value, str):
-                        value = [v.strip() for v in re.split(r"[\n,]", value) if v.strip()]
-                    value = [str(v) for v in (value or []) if str(v).strip()]
-                else:
-                    value = str(value if value is not None else "").strip()
-                    if key == "preset_ids" and isinstance(values.get(key), list):
-                        value = ",".join(str(v) for v in values[key] if str(v).strip())
-                if key == "api_token" and value == "":
-                    continue  # never clear the token through a masked form
-                if key == "notify_mode" and value not in NOTIFY_MODES:
-                    raise ServiceError("无效的通知策略")
-                if key == "format" and value not in FORMATS:
-                    raise ServiceError("无效的导出格式")
-                if key == "image_profile" and value not in IMAGE_PROFILES:
-                    raise ServiceError("无效的图片处理档位")
-                if key == "send_mode" and value not in SEND_MODES:
-                    raise ServiceError("无效的发送方式")
-                if key == "seed_mode" and value not in ("random", "fixed"):
-                    raise ServiceError("无效的种子模式")
-                target[key] = value
-                touched += 1
-        if touched and hasattr(self.config, "save_config"):
-            self.config.save_config()
-        self.reload_config()
+    async def reload_config(self) -> None:
+        configs = [self.settings.primary()]
+        configs.extend(InstanceConfig(**item) for item in self.store.list_instances())
+        await self.instances.configure(configs, self.store.default_instance())
+        host = self.cfg("webhook", "bind_host", "127.0.0.1")
+        port = _integer(self.cfg("webhook", "bind_port", 8790), 8790, 1, 65535)
+        address = (host, port) if self.cfg("webhook", "enabled", False) else None
+        if address == self._hook_address:
+            return
+        await self.listener.close()
+        self._hook_address = None
+        if address:
+            try:
+                await self.listener.start(*address)
+                self._hook_address = address
+            except (OSError, ValueError):
+                self.logger.warning("[mio_studio] Webhook 监听不可用，继续使用轮询。")
+
+    async def update_config(self, changes):
+        self.settings.update(changes)
+        await self.reload_config()
         self.ensure_poller()
         return self.config_view()
 
-    def notify_mode(self) -> str:
-        mode = str(self.cfg("delivery", "notify_mode", "summary") or "summary")
-        return mode if mode in NOTIFY_MODES else "summary"
+    async def start(self) -> None:
+        await self.reload_config()
+        # A POST can have succeeded before a shutdown. Never replay it blindly.
+        for task in self.store.pending():
+            if task["status"] == "dispatching":
+                self.store.update(
+                    task["id"],
+                    expected_status="dispatching",
+                    status="interrupted",
+                    error="提交结果未知。请到 Mio 核对是否已接单，再决定是否重试。",
+                    finished_at=time.time(),
+                )
+        for task in self.store.list_tasks(limit=400):
+            self._schedule_notification(task)
+        self.ensure_poller()
 
-    def export_format(self) -> str:
-        fmt = str(self.cfg("export", "format", "html") or "html").lower()
-        return fmt if fmt in FORMATS else "html"
+    def route(self, actor: Actor, instance_id: str | None = None) -> InstanceConfig:
+        self.governance.require(actor, "read")
+        return self.instances.resolve(
+            instance_id, self.session_policy(actor.session).get("instance_id")
+        )
 
-    def image_profile(self) -> str:
-        prof = str(self.cfg("export", "image_profile", "auto") or "auto")
-        return prof if prof in IMAGE_PROFILES else "auto"
-
-    def default_preset_ids(self) -> list[str]:
-        raw = self.cfg("defaults", "preset_ids", "")
-        if isinstance(raw, list):
-            return [str(v).strip() for v in raw if str(v).strip()]
-        return [v.strip() for v in str(raw or "").split(",") if v.strip()]
-
-    def export_options(self) -> dict[str, Any]:
-        return {
-            "showCaptions": bool(self.cfg("export", "show_captions", True)),
-            "showPrompts": bool(self.cfg("export", "show_prompts", False)),
-            "themeColor": str(self.cfg("export", "theme_color", "") or ""),
-            "signature": str(self.cfg("export", "signature", "") or ""),
-        }
-
-    # ------------------------------------------------------------- permission
-    def session_allowed(self, umo: str, is_admin: bool) -> bool:
-        if is_admin:
-            return True
-        if bool(self.cfg("permissions", "admin_only", False)):
-            return False
-        allowed = [
-            str(v)
-            for v in (self.cfg("permissions", "allowed_sessions", []) or [])
-            if str(v).strip()
-        ]
-        if not allowed:
-            return True
-        return any(umo == a or umo.startswith(a) for a in allowed)
-
-    # ------------------------------------------------------------------ status
-    async def status(self) -> dict[str, Any]:
-        info: dict[str, Any] = {
-            "configured": self.client.configured,
-            "baseUrl": self.client.base_url,
+    async def status(self, *, actor: Actor, instance_id: str | None = None) -> dict[str, Any]:
+        instance = self.route(actor, instance_id)
+        client = self.instances.get(instance.id)
+        records = self._visible(actor, 400, instance_id=instance.id)
+        view = {
+            "configured": bool(instance.token),
+            "instance_id": instance.id,
+            "baseUrl": instance.base_url if actor.is_admin else instance.label,
             "ok": False,
-            "patched": False,
+            "tasks": {
+                "total": len(records),
+                "active": sum(item["status"] in ACTIVE_STATES | {"queued"} for item in records),
+            },
         }
-        if not self.client.configured:
-            info["error"] = "尚未配置 Mio 服务地址"
-            return info
         try:
-            health = await self.client.health()
-            info.update({"ok": True, "version": health.get("version"), "health": health})
-            caps = await self.client.capabilities()
-            info["patched"] = bool(caps.get("productionQueue")) and "html" in (
-                caps.get("albumExportFormats") or []
-            )
-            info["capabilities"] = {
-                k: caps.get(k)
-                for k in (
-                    "version",
-                    "catalog",
-                    "albumExportFormats",
-                    "productionQueue",
-                    "operations",
-                )
-            }
-            if not info["patched"]:
-                info["error"] = (
-                    "Mio 未应用配套补丁（缺少 catalog / albums/export / production 路由）"
-                )
-        except MioError as exc:
-            info["error"] = exc.message
-            info["errorCode"] = exc.code
-        tasks = self.store.all()
-        info["tasks"] = {
-            "total": len(tasks),
-            "active": sum(
-                1
-                for t in tasks
-                if t.get("status") not in FINAL_STATES and t.get("status") != "missing"
-            ),
-        }
-        info["poller"] = bool(self._poller and not self._poller.done())
-        return info
+            meta = await client.probe()
+            view.update(api=meta["api"], version=meta["server"])
+            if not instance.token:
+                view.update(error="请在插件配置里填写 Mio 开放 API 的 mio_ 令牌。")
+                return view
+            identity = await client.call("whoami")
+            view.update(ok=True, scopes=identity.get("scopes", []))
+        except MioApiError as exc:
+            view.update(error=exc.message, code=exc.code)
+        return view
 
-    # ----------------------------------------------------------------- catalog
-    async def catalog(self, force: bool = False) -> dict[str, Any]:
-        async with self._catalog_lock:
-            if not force and self._catalog and time.monotonic() - self._catalog_at < CATALOG_TTL:
-                return self._catalog
-            data = await self.client.catalog()
-            cat = {
-                k: list(data.get(k) or [])
-                for k in (
-                    "workflows",
-                    "storyboards",
-                    "presets",
-                    "layouts",
-                    "channels",
-                    "collections",
-                )
-            }
-            cat["fetchedAt"] = time.time()
-            self._catalog = cat
-            self._catalog_at = time.monotonic()
-            return cat
+    async def catalog(self, *, actor: Actor, force: bool = False, instance_id: str | None = None):
+        instance = self.route(actor, instance_id)
+        return await self.resources.catalog(self.instances.get(instance.id), force=force)
 
     def catalog_defaults(self) -> dict[str, Any]:
+        presets = self.cfg("defaults", "preset_ids", "")
         return {
-            "workflows": str(self.cfg("defaults", "workflow_id", "") or ""),
-            "presets": self.default_preset_ids(),
-            "channels": str(self.cfg("defaults", "channel_id", "") or ""),
-            "layouts": str(self.cfg("export", "layout_id", "") or ""),
+            "workflows": self.cfg("defaults", "workflow_id", ""),
+            "storyboards": self.cfg("defaults", "storyboard_id", ""),
+            "presets": presets
+            if isinstance(presets, list)
+            else [p.strip() for p in presets.split(",") if p.strip()],
+            "channels": self.cfg("defaults", "channel_id", ""),
+            "layouts": self.cfg("export", "layout_id", ""),
         }
 
     @staticmethod
-    def pick(items: list[dict[str, Any]], token: str | int | None, *, label: str) -> dict[str, Any]:
-        """Resolve a 1-based number, an id or a unique title prefix to a catalogue item."""
-        if token is None or token == "":
-            raise ServiceError(f"缺少{label}编号")
-        text = str(token).strip()
-        if text.isdigit():
-            index = int(text)
-            if not 1 <= index <= len(items):
-                raise ServiceError(f"{label}编号 {index} 超出范围（1–{len(items)}）")
-            return items[index - 1]
+    def pick(items, token, *, label):
+        value = str(token or "").strip().lstrip("#")
+        if value.isdecimal() and len(value) <= 9 and 1 <= int(value) <= len(items):
+            return items[int(value) - 1]
         for item in items:
-            if item.get("id") == text:
+            if value and value in (item.get("id"), item.get("title"), item.get("name")):
                 return item
-        matches = [it for it in items if str(it.get("title") or "").startswith(text)]
-        if len(matches) == 1:
-            return matches[0]
-        raise ServiceError(f"找不到{label}「{text}」，请用 /mio ls 查看编号")
-
-    def _default_item(
-        self, items: list[dict[str, Any]], configured: str, label: str, *, required: bool
-    ) -> dict[str, Any] | None:
-        if configured:
-            for item in items:
-                if item.get("id") == configured:
-                    return item
-            raise ServiceError(
-                f"面板里配置的默认{label}（{configured}）在 Mio 中不存在，请重新选择"
-            )
-        if items and required:
-            return items[0]
-        if required:
-            raise ServiceError(f"Mio 中没有可用的{label}")
-        return None
+        raise ServiceError(
+            f"没有找到{label}。请先刷新目录，检查编号或名称。",
+            code="resource_not_found",
+            status=404,
+        )
 
     async def resolve_selection(
         self,
-        workflow: str | None,
-        storyboard: str | None,
-        presets: list[str] | None,
-        channel: str | None,
-    ) -> dict[str, Any]:
-        """Turn user tokens (numbers / ids / '0' for default) into concrete Mio resources."""
-        cat = await self.catalog(force=True)
-        channels = cat["channels"]
-        if channel and channel != "0":
-            channel_item = self.pick(channels, channel, label="通道")
-        else:
-            configured = str(self.cfg("defaults", "channel_id", "") or "")
-            channel_item = self._default_item(channels, configured, "图像通道", required=True)
-            if not configured:
-                comfy = [c for c in channels if c.get("provider") == "comfyui"]
-                channel_item = comfy[0] if comfy else channel_item
-        uses_workflow = (
-            channel_item.get("provider") == "comfyui" or channel_item.get("usesWorkflow") is True
+        workflow,
+        storyboard,
+        presets,
+        channel,
+        *,
+        actor: Actor,
+        instance_id: str | None = None,
+        candidates: int = 1,
+        slot_overrides=None,
+    ):
+        instance = self.route(actor, instance_id)
+        cat = await self.catalog(actor=actor, instance_id=instance.id)
+        defaults = self.catalog_defaults()
+        room = self.session_policy(actor.session)
+
+        def choose(kind, token, label, fallback="", first=False):
+            actual = token if token not in (None, "", "0") else fallback
+            if actual:
+                return self.pick(cat.get(kind, []), actual, label=label)
+            return cat[kind][0] if first and cat.get(kind) else None
+
+        story = choose("storyboards", storyboard, "分镜", defaults["storyboards"], True)
+        if not story:
+            raise ServiceError("Mio 还没有分镜。请先创建分镜，再装配任务。")
+        preset_tokens = presets or room.get("preset_ids") or defaults["presets"]
+        if isinstance(preset_tokens, str):
+            preset_tokens = preset_tokens.split(",")
+        selected_presets = [
+            self.pick(cat.get("presets", []), entry, label="预设")
+            for entry in dict.fromkeys(
+                p.strip() for p in preset_tokens if p.strip() and p.strip() != "0"
+            )
+        ][:128]
+        source = choose("channels", channel, "图像通道", defaults["channels"])
+        is_cloud = bool(source and source.get("cloud"))
+        if is_cloud and workflow not in (None, "", "0"):
+            raise ServiceError("请选择工作流或云端通道，两者不能同时使用。")
+        wf = (
+            None
+            if is_cloud
+            else choose("workflows", workflow, "工作流", defaults["workflows"], True)
         )
-        workflow_item = None
-        if uses_workflow:
-            if workflow and workflow != "0":
-                workflow_item = self.pick(cat["workflows"], workflow, label="工作流")
-            else:
-                workflow_item = self._default_item(
-                    cat["workflows"],
-                    str(self.cfg("defaults", "workflow_id", "") or ""),
-                    "工作流",
-                    required=True,
-                )
-        story_item = self.pick(cat["storyboards"], storyboard, label="分幕")
-        preset_items: list[dict[str, Any]] = []
-        tokens = [t for t in (presets or []) if t not in ("", "0")]
-        if tokens:
-            for token in tokens:
-                item = self.pick(cat["presets"], token, label="预设")
-                if item not in preset_items:
-                    preset_items.append(item)
+        if not is_cloud and not wf:
+            raise ServiceError("没有可用工作流。请在 Mio 导入工作流或选择云端图像通道。")
+        generation = {"candidates": _integer(candidates, 1, 1, 16)}
+        if is_cloud:
+            generation["cloud_channel_id"] = source["id"]
         else:
-            for pid in self.default_preset_ids():
-                item = next((p for p in cat["presets"] if p.get("id") == pid), None)
-                if item is None:
-                    raise ServiceError(f"面板里配置的默认预设（{pid}）在 Mio 中不存在，请重新选择")
-                preset_items.append(item)
-            if not preset_items and cat["presets"]:
-                preset_items.append(cat["presets"][0])
-        if not preset_items:
-            raise ServiceError("Mio 中没有可用的预设（角色 / 场景变量集）")
-        if len(preset_items) > 20:
-            raise ServiceError("一次最多选择 20 个预设")
+            generation["workflow_id"] = wf["id"]
         return {
-            "channel": channel_item,
-            "workflow": workflow_item,
-            "storyboard": story_item,
-            "presets": preset_items,
+            "instance_id": instance.id,
+            "storyboard": story,
+            "workflow": wf,
+            "presets": selected_presets,
+            "channel": source,
+            "body": {
+                "storyboard_id": story["id"],
+                "preset_ids": [item["id"] for item in selected_presets],
+                "generation": generation,
+                **({"slot_overrides": slot_overrides} if slot_overrides else {}),
+            },
         }
 
-    # ------------------------------------------------------------------ tasks
-    def _title_for(self, selection: dict[str, Any]) -> str:
-        template = str(
-            self.cfg("defaults", "title_template", "{story} · {preset}") or "{story} · {preset}"
+    async def preview(self, selection, *, actor: Actor):
+        self.governance.require(actor, "read")
+        instance = self.route(actor, selection["instance_id"])
+        return await self.instances.get(instance.id).call(
+            "preview_assembly", body=selection["body"]
         )
-        story = selection["storyboard"].get("title") or "画册"
-        preset = " + ".join(str(p.get("title") or p.get("id")) for p in selection["presets"])
-        workflow = (selection.get("workflow") or {}).get("title") or ""
-        channel = selection["channel"].get("title") or selection["channel"].get("id") or ""
-        try:
-            title = template.format(
-                story=story,
-                preset=preset,
-                workflow=workflow,
-                channel=channel,
-                date=time.strftime("%m-%d"),
-                time=time.strftime("%H:%M"),
-            )
-        except (KeyError, IndexError, ValueError):
-            title = f"{story} · {preset}"
-        title = re.sub(r"\s+", " ", title).strip(" ·")
-        return (title or story)[:120]
 
-    async def create_task(
+    def _admit(
         self,
-        selection: dict[str, Any],
+        actor: Actor,
+        instance_id: str,
         *,
-        umo: str,
-        sender_id: str = "",
-        sender_name: str = "",
-        platform: str = "",
-        title: str | None = None,
-        start: bool = True,
-    ) -> dict[str, Any]:
-        seed_mode = str(self.cfg("defaults", "seed_mode", "random") or "random")
-        seed = _int(self.cfg("defaults", "seed", 1), 1, 0, 2**32 - 1)
-        concurrency = _int(self.cfg("defaults", "concurrency", 0), 0, 0, 8) or None
-        workflow = selection.get("workflow")
-        title = (title or "").strip() or self._title_for(selection)
-        request_id = f"astrbot-{uuid.uuid4().hex}"
-        try:
-            task = await self.client.assemble(
-                story_id=selection["storyboard"]["id"],
-                presets=[
-                    {"kind": p.get("category") or "characters", "id": p["id"]}
-                    for p in selection["presets"]
-                ],
-                channel_id=selection["channel"]["id"],
-                workflow_id=workflow["id"] if workflow else None,
-                title=title,
-                request_id=request_id,
-                seed=seed,
-                seed_enabled=(seed_mode == "fixed" and workflow is not None),
-                concurrency=concurrency,
-            )
-        except MioError as exc:
+        kind: str,
+        title: str,
+        body: dict,
+        selection: dict | None = None,
+        text: str = "",
+        cloud: bool = False,
+        delivery: dict | None = None,
+    ):
+        instance = self.route(actor, instance_id)
+        if not instance.token:
             raise ServiceError(
-                f"Mio 装配失败：{exc.message}", code=exc.code, status=exc.status or 502
+                "请先填写 Mio 开放 API 的 mio_ 令牌。", code="missing_token", status=401
             )
-        if not isinstance(task, dict) or not task.get("id"):
-            raise ServiceError("Mio 未返回任务信息", code="bad_response", status=502)
-        record = self.store.add(
-            {
-                "id": task["id"],
-                "title": task.get("title") or title,
-                "albumId": task.get("albumId"),
-                "umo": umo,
-                "sender_id": sender_id,
-                "sender_name": sender_name,
-                "platform": platform,
-                "status": task.get("status") or "standby",
-                "notified": False,
-                "selection": {
-                    "workflowId": workflow["id"] if workflow else None,
-                    "workflowTitle": workflow.get("title") if workflow else None,
-                    "storyboardId": selection["storyboard"]["id"],
-                    "storyboardTitle": selection["storyboard"].get("title"),
-                    "presetIds": [p["id"] for p in selection["presets"]],
-                    "presetTitles": [
-                        str(p.get("title") or p.get("id")) for p in selection["presets"]
-                    ],
-                    "channelId": selection["channel"]["id"],
-                    "channelTitle": selection["channel"].get("title")
-                    or selection["channel"].get("id"),
-                },
-            }
-        )
-        if start:
-            try:
-                await self.client.start_task(task["id"], concurrency=concurrency)
-                record = self.store.update(task["id"], status="ready") or record
-            except MioError as exc:
-                self.store.update(task["id"], status="standby", error=exc.message)
-                raise ServiceError(
-                    f"任务 #{record['num']} 已创建但启动失败：{exc.message}（可用 /mio resume {record['num']} 重试）",
-                    code=exc.code,
-                    status=exc.status or 502,
-                )
-        self._tasks_at = 0.0
+        policy = self.governance.policy(actor, cloud=cloud or instance.cloud, text=text)
+        task_id = uuid.uuid4().hex
+        payload = {
+            "id": task_id,
+            "kind": kind,
+            "title": title.strip()[:120] or "未命名作品",
+            "instance_id": instance.id,
+            "umo": actor.session,
+            "platform": actor.platform,
+            "sender_id": actor.id,
+            "sender_name": actor.name,
+            "selection": selection or {},
+            "request": body,
+            "delivery": delivery or {},
+            "notified": False,
+        }
+        try:
+            record = self.store.admit(
+                payload,
+                actor_key=actor.scoped_id,
+                daily_limit=policy.daily_limit,
+                user_limit=policy.user_active_limit,
+                cooldown=policy.cooldown_seconds,
+                cloud=policy.cloud,
+                cloud_limit=policy.cloud_daily_limit,
+            )
+        except AdmissionDenied as exc:
+            self.store.audit(
+                kind, actor_id=actor.scoped_id, instance_id=instance.id, outcome=exc.code
+            )
+            raise ServiceError(exc.message, code=exc.code, status=429) from None
+        self.store.audit(kind, actor_id=actor.scoped_id, instance_id=instance.id, task_id=task_id)
         self.ensure_poller()
         return record
 
-    async def mio_tasks(self, force: bool = False) -> list[dict[str, Any]]:
-        if not force and time.monotonic() - self._tasks_at < TASKS_TTL:
-            return self._tasks_cache
-        self._tasks_cache = await self.client.production_tasks()
-        self._tasks_at = time.monotonic()
-        return self._tasks_cache
-
-    def merge_view(self, record: dict[str, Any], live: dict[str, Any] | None) -> dict[str, Any]:
-        done, failed, total = progress_of(live)
-        key = (
-            status_key(live)
-            if live is not None
-            else (
-                "missing"
-                if record.get("status") == "missing"
-                else str(record.get("status") or "unknown")
-            )
+    async def create_task(self, selection, *, actor: Actor, title=None, start=True):
+        story = selection["storyboard"]
+        body = dict(selection["body"])
+        title = title or story["title"]
+        body.update(title=title[:120], auto_start=bool(start), adopt_first=bool(start))
+        return self._admit(
+            actor,
+            selection["instance_id"],
+            kind="workshop",
+            title=title,
+            body=body,
+            selection={
+                "storyboardTitle": story["title"],
+                "workflowTitle": (selection["workflow"] or {}).get("title"),
+                "presetTitles": [p["title"] for p in selection["presets"]],
+                "channelTitle": (selection["channel"] or {}).get("title"),
+            },
+            cloud=bool((body.get("generation") or {}).get("cloud_channel_id")),
+            text=title,
         )
-        view = {
-            **record,
-            "live": bool(live),
-            "statusKey": key,
-            "done": done,
-            "failed": failed,
-            "total": total,
-        }
-        if live:
-            view["albumId"] = live.get("albumId") or record.get("albumId")
-            report = live.get("cancelReport") if isinstance(live.get("cancelReport"), dict) else {}
-            view["error"] = live.get("error") or report.get("message") or report.get("reason") or ""
-            view["queuePosition"] = live.get("queuePosition")
-            view["title"] = live.get("title") or record.get("title")
+
+    def _visible(self, actor, limit, *, instance_id=None):
+        role = self.governance.require(actor, "read")
+        return self.store.list_tasks(
+            umo=None if role == "admin" else actor.session,
+            sender_id=None if role == "admin" else actor.id,
+            instance_id=instance_id,
+            limit=_integer(limit, 50, 1, 400),
+        )
+
+    def find_record(self, token, *, actor: Actor):
+        role = self.governance.require(actor, "read")
+        if actor.session:
+            self.store.seen_session(actor.session, actor.platform, actor.name)
+        value = str(token or "").strip().lstrip("#")
+        if not value:
+            record = self.store.latest_for(
+                actor.session or None, sender_id=None if role == "admin" else actor.id
+            )
+        elif value.isdecimal() and len(value) < 16:
+            record = self.store.by_num(int(value))
         else:
-            view["error"] = record.get("error")
-        return view
-
-    async def task_views(
-        self, *, umo: str | None = None, limit: int = 10, force: bool = False
-    ) -> tuple[list[dict[str, Any]], int]:
-        records = self.store.all()
-        if umo:
-            records = [r for r in records if r.get("umo") == umo]
-        records = records[-limit:] if limit else records
-        try:
-            live = {t.get("id"): t for t in await self.mio_tasks(force=force)}
-        except MioError:
-            live = None
-        views = []
-        for record in records:
-            views.append(
-                self.merge_view(record, live.get(record["id"]) if live is not None else None)
+            record = self.store.get(value)
+        if not record:
+            raise ServiceError(
+                "没找到这个任务。用 /mio jobs 查看编号。", code="task_not_found", status=404
             )
-        others = 0
-        if live is not None:
-            mine = {r.get("id") for r in self.store.all()}
-            others = sum(1 for tid in live if tid not in mine)
-        return views, others
+        self.governance.authorize_task(actor, record, capability="read")
+        return record
 
-    async def task_view(self, record: dict[str, Any], *, force: bool = True) -> dict[str, Any]:
-        """Merge the queue list entry (paused / queuePosition / albumId) with the detail (error / cancelReport)."""
-        live: dict[str, Any] | None
-        try:
-            live = await self.client.production_task(record["id"])
-        except MioError as exc:
-            if exc.status == 404:
-                live = None
-                if record.get("status") != "missing":
-                    self.store.update(record["id"], status="missing")
-                    record = {**record, "status": "missing"}
-            else:
-                raise ServiceError(
-                    f"读取任务失败：{exc.message}", code=exc.code, status=exc.status or 502
-                )
-        if live is not None:
-            try:
-                entry = next(
-                    (t for t in await self.mio_tasks(force=force) if t.get("id") == record["id"]),
-                    None,
-                )
-            except MioError:
-                entry = None
-            if entry:
-                live = {**entry, **{k: v for k, v in live.items() if v is not None}}
-        return self.merge_view(record, live)
-
-    def find_record(self, token: str | int | None, *, umo: str | None = None) -> dict[str, Any]:
-        if token in (None, "", "0"):
-            record = self.store.latest_for(umo) or self.store.latest_for(None)
-            if not record:
-                raise ServiceError("还没有任务，先用 /mio use 创建一个")
-            return record
-        text = str(token).strip().lstrip("#")
-        if text.isdigit():
-            record = self.store.by_num(int(text))
-            if record:
-                return record
-            raise ServiceError(f"没有编号为 #{text} 的任务（/mio jobs 查看）")
-        record = self.store.get(text)
-        if record:
-            return record
-        raise ServiceError(f"找不到任务「{text}」")
-
-    async def task_action(self, record: dict[str, Any], action: str) -> str:
-        num = record["num"]
-        try:
-            if action == "pause":
-                await self.client.production("pause", {"id": record["id"]})
-                return f"⏸ 任务 #{num} 已暂停"
-            if action == "resume":
-                view = await self.task_view(record)
-                if view.get("statusKey") == "paused":
-                    await self.client.production("resume", {"id": record["id"]})
-                    self.store.update(record["id"], notified=False)
-                    self.ensure_poller()
-                    return f"▶️ 任务 #{num} 已继续"
-                if view.get("statusKey") in ("running", "ready", "preparing"):
-                    return f"ℹ️ 任务 #{num} 正在进行中（{view.get('done', 0)}/{view.get('total', 0)} 幕）"
-                if view.get("statusKey") == "complete":
-                    return f"ℹ️ 任务 #{num} 已全部完成，用 /mio get {num} 取件"
-                await self.client.start_task(record["id"])
-                self.store.update(record["id"], notified=False, status="ready")
-                self._tasks_at = 0.0
-                self.ensure_poller()
-                return f"▶️ 任务 #{num} 已重新开始（补跑未完成的分幕）"
-            if action == "cancel":
-                await self.client.production("cancel", {"id": record["id"]})
-                self.store.update(record["id"], notified=True, status="cancelled")
-                return f"⏹ 任务 #{num} 已停止（已生成的分幕保留，可 /mio resume {num} 补跑）"
-            if action == "remove":
-                try:
-                    await self.client.production(
-                        "remove", {"id": record["id"], "deleteAlbums": False}
-                    )
-                except MioError as exc:
-                    if exc.status != 404:
-                        raise
-                self.store.remove(record["id"])
-                return f"🗑 任务 #{num} 已移除（Mio 图库中的画册保留）"
-        except MioError as exc:
-            raise ServiceError(f"操作失败：{exc.message}", code=exc.code, status=exc.status or 502)
-        raise ServiceError("未知操作")
-
-    # ---------------------------------------------------------------- results
-    def _export_dir(self) -> Path:
-        path = self.data_dir / "exports"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def _prune_exports(self) -> None:
-        files = sorted(
-            self._export_dir().glob("*"), key=lambda p: p.stat().st_mtime if p.exists() else 0
+    def merge_view(self, record, live):
+        live = live or {}
+        status = record.get("status", "unknown")
+        fields = (
+            "id",
+            "num",
+            "title",
+            "instance_id",
+            "series_id",
+            "episode_id",
+            "job_id",
+            "kind",
+            "umo",
+            "platform",
+            "sender_id",
+            "sender_name",
+            "selection",
+            "created_at",
+            "started_at",
+            "finished_at",
+            "notified",
+            "error",
         )
-        for stale in files[:-MAX_EXPORT_FILES]:
-            try:
-                stale.unlink()
-            except OSError:
-                pass
-
-    async def resolve_layout(self, token: str | None) -> dict[str, Any] | None:
-        cat = await self.catalog()
-        layouts = cat["layouts"]
-        if token and token != "0":
-            return self.pick(layouts, token, label="导出模板")
-        configured = str(self.cfg("export", "layout_id", "") or "")
-        if configured:
-            for item in layouts:
-                if item.get("id") == configured:
-                    return item
-            self.logger.warning(
-                f"[mio_studio] 默认导出模板 {configured} 不存在，改用 Mio 第一个模板"
-            )
-        return layouts[0] if layouts else None
-
-    async def export(
-        self, record: dict[str, Any], *, fmt: str | None = None, layout: str | None = None
-    ) -> dict[str, Any]:
-        album_id = record.get("albumId")
-        if not album_id:
-            raise ServiceError("该任务还没有关联画册")
-        fmt = (fmt or self.export_format()).lower()
-        if fmt not in FORMATS:
-            raise ServiceError("导出格式只支持 html / zip / pdf")
-        layout_item = await self.resolve_layout(layout) if fmt == "html" else None
-        try:
-            data, filename, content_type = await self.client.export_album(
-                [album_id],
-                fmt,
-                layout_id=layout_item.get("id") if layout_item else None,
-                image_profile=self.image_profile() if self.image_profile() != "auto" else None,
-                options=self.export_options() if fmt == "html" else None,
-            )
-        except MioError as exc:
-            raise ServiceError(f"导出失败：{exc.message}", code=exc.code, status=exc.status or 502)
-        filename = _safe_filename(filename or f"{record.get('title')}.{fmt}")
-        if not filename.lower().endswith("." + fmt):
-            filename += "." + fmt
-        path = self._export_dir() / f"{record['num']:04d}-{filename}"
-        path.write_bytes(data)
-        self._prune_exports()
         return {
-            "path": path,
-            "filename": filename,
-            "contentType": content_type,
-            "size": len(data),
-            "layout": layout_item,
+            **{k: record.get(k) for k in fields},
+            "status": status,
+            "statusKey": DISPLAY_STATES.get(status, status),
+            "albumId": record.get("episode_id"),
+            "done": live.get("done", record.get("done", 0)),
+            "failed": live.get("failed", record.get("failed", 0)),
+            "total": live.get("total", record.get("total", 0)),
+            "queuePosition": self.store.queue_position(record["id"])
+            if status == "queued"
+            else None,
+        }
+
+    async def task_views(self, *, actor: Actor, limit=50, force=False, instance_id=None):
+        return [
+            self.merge_view(record, None)
+            for record in self._visible(actor, limit, instance_id=instance_id)
+        ], 0
+
+    async def task_view(self, record, *, actor: Actor, force=True):
+        self.governance.authorize_task(actor, record, capability="read")
+        if (
+            force
+            and record.get("job_id")
+            and record["status"] in {"queued_remote", "running", "paused"}
+        ):
+            await self._refresh(record)
+        return self.merge_view(self.store.get(record["id"]) or record, None)
+
+    @staticmethod
+    def _job_stats(job):
+        items = _entries(job.get("items"))
+        return {
+            "done": sum(item.get("state") in {"complete", "skipped"} for item in items),
+            "failed": sum(item.get("state") in {"failed", "uncertain"} for item in items),
+            "total": len(items),
+        }
+
+    async def _dispatch(self, record):
+        task_id = record["id"]
+        try:
+            client = self.instances.get(record["instance_id"])
+            data = await self._submit(client, record)
+            job = data.get("job") or {}
+            job_id = data.get("job_id") or job.get("id")
+            status = JOB_STATES.get(job.get("state"), "queued_remote") if job_id else "standby"
+            if data.get("start_error"):
+                status = "failed"
+            updated = self.store.update(
+                task_id,
+                expected_status="dispatching",
+                status=status,
+                job_id=job_id or "",
+                series_id=(data.get("series") or {}).get("id") or record.get("series_id", ""),
+                episode_id=(data.get("episode") or {}).get("id") or record.get("episode_id", ""),
+                error="工作已装配，Mio 未能启动出图。请检查工作流和通道后继续。"
+                if data.get("start_error")
+                else "",
+                **self._job_stats(job),
+                **({"finished_at": time.time()} if status in FINAL_STATES else {}),
+            )
+        except MioApiError as exc:
+            status = "interrupted" if exc.retryable else "failed"
+            updated = self.store.update(
+                task_id,
+                expected_status="dispatching",
+                status=status,
+                error=exc.message,
+                finished_at=time.time(),
+            )
+        except Exception:
+            self.logger.warning("[mio_studio] 无法处理 Mio 的提交响应。")
+            updated = self.store.update(
+                task_id,
+                expected_status="dispatching",
+                status="interrupted",
+                error="提交结果未知，请先到 Mio 查看任务是否已经创建。",
+                finished_at=time.time(),
+            )
+        if updated:
+            self._schedule_notification(updated)
+        self._wake.set()
+
+    async def _submit(self, client, record):
+        body = {**record["request"], "idempotency_key": "astrbot:" + record["id"]}
+        if record.get("run_existing"):
+            job = await client.call(
+                "render_episode",
+                path_params={"episode_id": record["episode_id"]},
+                body={"adopt_first": True, "idempotency_key": body["idempotency_key"] + ":render"},
+            )
+            return {"job": job}
+        if record["kind"] == "workshop":
+            return await client.call("create_workshop_task", body=body)
+        raise ServiceError("无法识别当前任务类型。")
+
+    async def _refresh(self, record):
+        if not record.get("job_id"):
+            return
+        try:
+            job = await self.instances.get(record["instance_id"]).call(
+                "get_job",
+                path_params={"job_id": record["job_id"]},
+            )
+        except MioApiError as exc:
+            if exc.status == 404:
+                changes = {"status": "missing", "error": "Mio 中已找不到该作业。"}
+            else:
+                return
+        else:
+            if not isinstance(job, dict) or job.get("id") != record["job_id"]:
+                return
+            status = JOB_STATES.get(job.get("state"))
+            if status is None:
+                return
+            changes = {"status": status, **self._job_stats(job)}
+            if status in {"failed", "interrupted"}:
+                changes["error"] = "部分分幕未完成。请在 Mio 检查工作流、模型和执行记录。"
+            else:
+                changes["error"] = ""
+        if changes["status"] in FINAL_STATES:
+            changes["finished_at"] = time.time()
+        current = self.store.get(record["id"])
+        if not current or current.get("job_id") != record["job_id"]:
+            return
+        changes = {k: v for k, v in changes.items() if current.get(k) != v}
+        if changes:
+            current = self.store.update(record["id"], expected_status=record["status"], **changes)
+        if current:
+            self._schedule_notification(current)
+
+    async def task_action(self, record, action, *, actor: Actor):
+        self.governance.authorize_task(
+            actor,
+            record,
+            capability="remove" if action == "remove" else "control",
+        )
+        async with self._controls:
+            current = self.store.get(record["id"])
+            if not current:
+                raise ServiceError("任务已移除。", status=404)
+            result = await self._control(current, action, actor)
+        self.store.audit(
+            action,
+            actor_id=actor.scoped_id,
+            instance_id=current.get("instance_id", ""),
+            task_id=current["id"],
+        )
+        self.ensure_poller()
+        return result
+
+    async def _control(self, record, action, actor):
+        status, task_id = record["status"], record["id"]
+        number = record["num"]
+        if action == "remove":
+            if status in ACTIVE_STATES or status in {"queued", "paused"}:
+                raise ServiceError("请先停止任务，等它结束后再移除记录。", status=409)
+            self.store.remove(task_id)
+            return f"已移除任务 #{number} 的本地记录。Mio 图库中的作品仍可查看。"
+        if action in {"pause", "cancel"} and status == "queued":
+            new_state = "paused" if action == "pause" else "cancelled"
+            if self.store.update(task_id, expected_status="queued", status=new_state):
+                return f"任务 #{number} {'已暂停' if action == 'pause' else '已停止'}。"
+            raise ServiceError("任务刚开始提交，请稍后重试。", status=409)
+        if action == "resume" and status == "paused" and not record.get("job_id"):
+            if self.store.update(task_id, expected_status="paused", status="queued"):
+                return f"任务 #{number} 已重新排队。"
+        if action == "cancel" and status == "paused" and not record.get("job_id"):
+            if self.store.update(task_id, expected_status="paused", status="cancelled"):
+                return f"任务 #{number} 已停止。"
+        job_id = record.get("job_id")
+        if not job_id:
+            if action == "resume" and status in {"standby", "failed"} and record.get("episode_id"):
+                self._enqueue_existing_render(record, actor)
+                return f"任务 #{number} 已重新排队。"
+            raise ServiceError("此任务没有可控制的作业。请在 Mio 核对后重新创建。", status=409)
+        client = self.instances.get(record["instance_id"])
+        path = {"job_id": job_id}
+        if action == "resume" and status in {"paused", "failed", "cancelled"}:
+            source = (record.get("request") or {}).get("generation") or {}
+            self.governance.policy(
+                actor,
+                cloud=self.instances.resolve(record["instance_id"]).cloud
+                or bool(source.get("cloud_channel_id")),
+            )
+            if not self.store.claim_control(task_id, status, self.governance.global_limit):
+                raise ServiceError("生成队列已满，请等正在运行的任务结束后再继续。", status=429)
+            try:
+                op = "resume_job" if status == "paused" else "retry_job"
+                job = await client.call(
+                    op, path_params=path, body={} if op == "retry_job" else None
+                )
+                self.store.update(
+                    task_id,
+                    expected_status="dispatching",
+                    status=JOB_STATES.get(job.get("state"), "queued_remote"),
+                    notified=False,
+                    finished_at=None,
+                    **self._job_stats(job),
+                )
+            except BaseException:
+                # Keep tracking the same job; the server may have accepted the request.
+                self.store.update(task_id, expected_status="dispatching", status="queued_remote")
+                self.ensure_poller()
+                raise
+            return f"任务 #{number} 已请求继续。"
+        if action in {"pause", "cancel"} and status in {"queued_remote", "running", "paused"}:
+            job = await client.call(f"{action}_job", path_params=path)
+            if self.store.update(
+                task_id,
+                expected_status=status,
+                status=JOB_STATES.get(job.get("state"), status),
+                **self._job_stats(job),
+            ):
+                return f"任务 #{number} 已请求{'暂停' if action == 'pause' else '停止'}。"
+        raise ServiceError("当前任务状态不支持这个操作。请刷新任务状态。", status=409)
+
+    def _enqueue_existing_render(self, record, actor):
+        source = (record.get("request") or {}).get("generation") or {}
+        self.governance.policy(
+            actor,
+            cloud=self.instances.resolve(record["instance_id"]).cloud
+            or bool(source.get("cloud_channel_id")),
+        )
+        if not self.store.update(
+            record["id"],
+            expected_status=record["status"],
+            status="queued",
+            run_existing=True,
+            notified=False,
+            finished_at=None,
+        ):
+            raise ServiceError("任务状态已变化，请刷新后再试。", status=409)
+
+    async def _file(self, record, *, fmt=None, layout=None, options=None, umo="") -> DownloadedFile:
+        episode = record.get("episode_id")
+        if not episode:
+            raise ServiceError("任务还没有生成可取件的分集。", status=409)
+        client = self.instances.get(record["instance_id"])
+        fmt = fmt or self.export_format(umo)
+        template = layout or self._policy_value(umo, "export", "layout_id", "")
+        if template and template != "0":
+            cat = await self.resources.catalog(client)
+            template = self.pick(cat.get("layouts", []), template, label="导出模板")["id"]
+        defaults = {
+            key: self.cfg("export", key, fallback)
+            for key, fallback in {
+                "image_profile": "auto",
+                "show_captions": True,
+                "show_prompts": False,
+                "theme_color": "",
+                "signature": "",
+            }.items()
+        }
+        return await self.delivery.export(
+            client,
+            episode,
+            fmt=fmt,
+            template_id=template or None,
+            options={**defaults, **(options or {})},
+        )
+
+    @staticmethod
+    def _file_view(file, fmt):
+        return {
+            "path": file.path,
+            "filename": file.filename,
+            "contentType": file.content_type,
+            "size": file.size,
             "format": fmt,
         }
 
-    async def frames(self, album_id: str, *, limit: int | None = None) -> dict[str, Any]:
-        """Download (and cache) the frame images of an album."""
-        try:
-            album = await self.client.album(album_id)
-        except MioError as exc:
-            raise ServiceError(
-                f"读取画册失败：{exc.message}", code=exc.code, status=exc.status or 502
-            )
-        cache = self.data_dir / "cache" / re.sub(r"[^A-Za-z0-9_.-]", "_", album_id)
-        cache.mkdir(parents=True, exist_ok=True)
-        out = []
-        steps = sorted(
-            (s for s in album.get("steps", []) if isinstance(s, dict)),
-            key=lambda s: s.get("stepIndex", 0),
-        )
-        for step in steps[: limit or None]:
-            image = step.get("image") or ""
-            entry = {
-                "index": step.get("stepIndex", len(out)),
-                "name": step.get("name", ""),
-                "caption": step.get("caption", ""),
-                "path": None,
-            }
-            if image:
-                digest = hashlib.sha1(image.encode("utf-8")).hexdigest()[:16]
-                existing = next(cache.glob(f"{digest}.*"), None)
-                if existing is None:
-                    try:
-                        data, mime = await self.client.asset_bytes(image)
-                    except MioError as exc:
-                        self.logger.warning(f"[mio_studio] 下载分幕图片失败 {image}: {exc.message}")
-                        data, mime = b"", ""
-                    if data:
-                        ext = {
-                            "image/png": "png",
-                            "image/jpeg": "jpg",
-                            "image/webp": "webp",
-                            "image/gif": "gif",
-                        }.get(mime, "png")
-                        existing = cache / f"{digest}.{ext}"
-                        existing.write_bytes(data)
-                entry["path"] = existing
-            out.append(entry)
-        return {"album": album, "frames": out}
+    async def export(self, record, *, actor: Actor, fmt=None, layout=None, options=None):
+        self.governance.authorize_task(actor, record, capability="read")
+        fmt = fmt or self.export_format(actor.session)
+        file = await self._file(record, fmt=fmt, layout=layout, options=options, umo=actor.session)
+        return self._file_view(file, fmt)
 
-    # --------------------------------------------------------------- delivery
-    async def send(self, umo: str, chain: MessageChain) -> bool:
-        try:
-            return bool(await self.context.send_message(umo, chain))
-        except Exception as exc:
-            self.logger.warning(f"[mio_studio] send_message({umo}) failed: {exc}")
-            return False
-
-    async def send_text(self, umo: str, text: str) -> bool:
-        return await self.send(umo, MessageChain(chain=[Comp.Plain(text)]))
+    def _authorize_destination(self, actor, umo):
+        self.governance.require(actor, "read")
+        if not umo or (not actor.is_admin and actor.session != umo):
+            raise ServiceError("请选择当前会话，或由管理员选择已知会话。", status=403)
+        if umo != actor.session and not any(item["umo"] == umo for item in self.store.sessions()):
+            raise ServiceError("找不到该会话。请先在目标会话运行一条 Mio 指令。", status=404)
 
     async def send_export(
-        self,
-        record: dict[str, Any],
-        umo: str,
-        *,
-        fmt: str | None = None,
-        layout: str | None = None,
-        note: str = "",
-    ) -> dict[str, Any]:
-        result = await self.export(record, fmt=fmt, layout=layout)
-        layout_name = (result.get("layout") or {}).get("title") if result.get("layout") else None
-        text = (
-            note
-            or f"📦 任务 #{record['num']}《{record.get('title')}》导出完成：{result['filename']}（{result['size'] / 1024:.0f} KB"
+        self, record, umo, *, actor: Actor, fmt=None, layout=None, note="", options=None
+    ):
+        self.governance.authorize_task(actor, record, capability="read")
+        self._authorize_destination(actor, umo)
+        fmt = fmt or self.export_format(umo)
+        file = await self._file(record, fmt=fmt, layout=layout, options=options, umo=umo)
+        max_mb = _integer(self.cfg("delivery", "max_file_mb", 50), 50, 1, 200)
+        await self.delivery.send_file(
+            umo, file, note=note, max_size=max_mb * 1024**2, as_image=fmt == "strip"
         )
-        if not note:
-            text += f"，模板 {layout_name}）" if layout_name else "）"
-        await self.send(umo, MessageChain(chain=[Comp.Plain(text)]))
-        await self.send(
-            umo, MessageChain(chain=[Comp.File(name=result["filename"], file=str(result["path"]))])
-        )
-        return result
+        return self._file_view(file, fmt)
 
-    async def send_images(
-        self, record: dict[str, Any], umo: str, *, platform: str = "", header: str = ""
-    ) -> int:
-        album_id = record.get("albumId")
-        if not album_id:
-            raise ServiceError("该任务还没有关联画册")
-        max_images = _int(self.cfg("delivery", "max_images", 30), 30, 1, 200)
-        bundle = await self.frames(album_id, limit=max_images)
-        frames = [f for f in bundle["frames"] if f.get("path")]
-        album = bundle["album"]
-        include_captions = bool(self.cfg("delivery", "include_captions", True))
-        header = (
-            header
-            or f"🖼 任务 #{record['num']}《{album.get('title') or record.get('title')}》 {len(frames)} 幕"
+    async def send_images(self, record, umo, *, actor: Actor, platform="", header=""):
+        self.governance.authorize_task(actor, record, capability="read")
+        self._authorize_destination(actor, umo)
+        if not record.get("episode_id"):
+            raise ServiceError("任务还没有可发送的分幕图片。", status=409)
+        limit = _integer(self.cfg("delivery", "max_images", 30), 30, 1, 100)
+        bundle = await self.delivery.frames(
+            self.instances.get(record["instance_id"]),
+            record["episode_id"],
+            limit=limit,
+            take_fallback=record.get("kind") == "trial",
         )
-        if not frames:
-            await self.send_text(umo, header + "\n（还没有可发送的图片）")
-            return 0
-        send_mode = str(self.cfg("delivery", "send_mode", "auto") or "auto")
-        platform = (
-            platform
-            or str(record.get("platform") or "")
-            or (umo.split(":", 1)[0] if ":" in umo else "")
-        )
-        use_forward = send_mode == "forward" or (
-            send_mode == "auto" and platform in FORWARD_PLATFORMS and len(frames) > 1
+        return await self.delivery.send_images(
+            umo,
+            bundle,
+            platform=platform or record.get("platform") or "",
+            send_mode=self._policy_value(umo, "delivery", "send_mode", "auto"),
+            include_captions=bool(self.cfg("delivery", "include_captions", True)),
+            header=header,
+            forward_sender_name=self.cfg("delivery", "forward_sender_name", "Mio 绘页"),
+            forward_sender_uin=self.cfg("delivery", "forward_sender_uin", "10000"),
         )
 
-        def caption(frame: dict[str, Any]) -> str:
-            text = f"第 {int(frame['index']) + 1} 幕"
-            if frame.get("name"):
-                text += f" · {frame['name']}"
-            if include_captions and frame.get("caption"):
-                text += f"\n{frame['caption']}"
-            return text
-
-        if use_forward:
-            name = str(self.cfg("delivery", "forward_sender_name", "Mio 绘页") or "Mio 绘页")
-            uin = str(self.cfg("delivery", "forward_sender_uin", "10000") or "10000")
-            nodes = [Comp.Node(uin=uin, name=name, content=[Comp.Plain(header)])]
-            for frame in frames:
-                nodes.append(
-                    Comp.Node(
-                        uin=uin,
-                        name=name,
-                        content=[
-                            Comp.Plain(caption(frame)),
-                            Comp.Image.fromFileSystem(str(frame["path"])),
-                        ],
-                    )
-                )
-            if await self.send(umo, MessageChain(chain=[Comp.Nodes(nodes=nodes)])):
-                return len(frames)
-            self.logger.warning(
-                "[mio_studio] forward message failed, falling back to separate messages"
-            )
-        await self.send_text(umo, header)
-        if send_mode == "batch" or (send_mode == "auto" and not use_forward and len(frames) <= 4):
-            content: list = []
-            for frame in frames:
-                content.append(Comp.Plain(caption(frame) + "\n"))
-                content.append(Comp.Image.fromFileSystem(str(frame["path"])))
-            await self.send(umo, MessageChain(chain=content))
-            return len(frames)
-        for frame in frames:
-            await self.send(
-                umo,
-                MessageChain(
-                    chain=[
-                        Comp.Plain(caption(frame) + "\n"),
-                        Comp.Image.fromFileSystem(str(frame["path"])),
-                    ]
-                ),
-            )
-            await asyncio.sleep(0.3)
-        return len(frames)
-
-    async def notify_finished(self, record: dict[str, Any], view: dict[str, Any]) -> None:
+    async def _notify(self, record):
+        task_id, status = record["id"], record["status"]
+        if not self.store.claim_notification(task_id, status):
+            return
         umo = record.get("umo")
         if not umo:
             return
-        key = view.get("statusKey")
-        num = record["num"]
-        if key != "complete":
-            text = format_task(view)
-            await self.send_text(umo, text)
-            return
-        mode = self.notify_mode()
-        summary = f"✅ 任务 #{num}《{view.get('title')}》生成完成（{view.get('done', 0)}/{view.get('total', 0)} 幕）"
+        view = self.merge_view(record, None)
+        mode = (record.get("delivery") or {}).get("notify_mode") or self._policy_value(
+            umo,
+            "delivery",
+            "notify_mode",
+            "summary",
+        )
         if mode == "silent":
             return
-        if mode == "summary":
-            await self.send_text(
-                umo, summary + f"\n下载：/mio get {num} [html|zip|pdf|img] [模板#]"
-            )
+        if status != "complete" or mode == "summary":
+            await self.delivery.send_text(umo, format_task(view))
             return
-        if mode == "images":
-            try:
-                await self.send_images(record, umo, header=summary)
-            except ServiceError as exc:
-                await self.send_text(umo, summary + f"\n（发送图片失败：{exc.message}）")
-            return
-        if mode == "export":
-            try:
-                await self.send_export(record, umo)
-            except ServiceError as exc:
-                await self.send_text(
-                    umo, summary + f"\n（自动导出失败：{exc.message}，可用 /mio get {num} 重试）"
+        actor = Actor.panel()
+        try:
+            if mode == "qa_then_send":
+                client = self.instances.get(record["instance_id"])
+                job = await client.call(
+                    "qa_episode",
+                    path_params={"episode_id": record["episode_id"]},
+                    body={"auto_adopt": True, "idempotency_key": "astrbot:notify-qa:" + task_id},
                 )
+                await self.delivery.wait_job(client, job["id"])
+            if mode in {"images", "qa_then_send"}:
+                await self.send_images(record, umo, actor=actor)
+            elif mode in {"strip", "export"}:
+                await self.send_export(
+                    record, umo, actor=actor, fmt="strip" if mode == "strip" else None
+                )
+        except (MioApiError, ServiceError) as exc:
+            await self.delivery.send_text(
+                umo,
+                f"任务 #{record['num']} 已完成，自动交付失败：{exc.message}。可用 /mio get 取件。",
+            )
 
-    # ----------------------------------------------------------------- poller
-    def ensure_poller(self) -> None:
+    def _schedule_notification(self, record):
+        if record["status"] in FINAL_STATES and not record.get("notified"):
+            self._spawn(self._notify(record), wake=False)
+
+    def _task_done(self, task, wake):
+        self._background.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            self.logger.warning("[mio_studio] 后台操作未完成。")
+        if wake:
+            self._wake.set()
+
+    def _spawn(self, work, *, wake=True):
+        task = asyncio.create_task(work)
+        self._background.add(task)
+        task.add_done_callback(lambda item: self._task_done(item, wake))
+
+    def ensure_poller(self):
         if self._closing:
             return
+        self._wake.set()
         if self._poller is None or self._poller.done():
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                return
-            self._poller = loop.create_task(self._poll_loop())
+            self._poller = asyncio.create_task(self._poll_loop())
 
-    def _pending_records(self) -> list[dict[str, Any]]:
-        return [
-            r for r in self.store.all() if not r.get("notified") and r.get("status") != "missing"
-        ]
-
-    async def _poll_loop(self) -> None:
-        idle_rounds = 0
+    async def _poll_loop(self):
+        quiet = 0
         while not self._closing:
-            interval = _int(self.cfg("delivery", "poll_interval", 5), 5, 2, 120)
+            self._wake.clear()
+            for _ in range(self.governance.global_limit):
+                record = self.store.claim_next(self.governance.global_limit)
+                if not record:
+                    break
+                self._spawn(self._dispatch(record))
+            pending = self.store.pending()
+            if not pending:
+                return
+            self._hook_hits = set()
+            who = [
+                item
+                for item in pending
+                if item["status"] in {"queued_remote", "running", "preparing"}
+            ]
+            if who:
+                await asyncio.gather(*(self._refresh(item) for item in who))
+                quiet = 0
+            else:
+                quiet += 1
+            base = _integer(self.cfg("delivery", "poll_interval", 5), 5, 2, 120)
             try:
-                pending = self._pending_records()
-                if not pending or not self.client.configured:
-                    idle_rounds += 1
-                    if idle_rounds > 6:
-                        return  # nothing to watch; restarted on the next task
-                    await asyncio.sleep(interval)
-                    continue
-                idle_rounds = 0
-                await self._check_once(pending)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # pragma: no cover - defensive
-                self.logger.warning(f"[mio_studio] poller error: {exc}")
-            await asyncio.sleep(interval)
-
-    async def _check_once(self, pending: list[dict[str, Any]]) -> None:
-        try:
-            live = {t.get("id"): t for t in await self.mio_tasks(force=True)}
-        except MioError as exc:
-            self.logger.debug(f"[mio_studio] poll failed: {exc.message}")
-            return
-        for record in pending:
-            task = live.get(record["id"])
-            if task is None:
-                if time.time() - float(record.get("created_at") or 0) > 30:
-                    self.store.update(record["id"], status="missing", notified=True)
-                continue
-            status = str(task.get("status") or "")
-            changes: dict[str, Any] = {}
-            if status != record.get("status"):
-                changes["status"] = status
-            if task.get("albumId") and task.get("albumId") != record.get("albumId"):
-                changes["albumId"] = task.get("albumId")
-            if status in FINAL_STATES:
-                changes["notified"] = True
-                changes["finished_at"] = time.time()
-            if changes:
-                self.store.update(record["id"], **changes)
-            if status in FINAL_STATES:
-                view = self.merge_view({**record, **changes}, task)
-                try:
-                    await self.notify_finished({**record, **changes}, view)
-                except Exception as exc:  # pragma: no cover - defensive
-                    self.logger.warning(
-                        f"[mio_studio] notify failed for #{record.get('num')}: {exc}"
-                    )
-
-    async def close(self) -> None:
-        self._closing = True
-        if self._poller and not self._poller.done():
-            self._poller.cancel()
-            try:
-                await self._poller
-            except (asyncio.CancelledError, Exception):
+                await asyncio.wait_for(self._wake.wait(), timeout=min(30, base * (1 + quiet)))
+            except TimeoutError:
                 pass
-        await self.client.close()
+
+    def _hook_secret(self, instance_id):
+        return self.store.get_webhook(instance_id).get("secret")
+
+    def _hook_event(self, instance_id: str, event: WebhookEvent):
+        record = self.store.find_remote(instance_id, job_id=event.job_id) if event.job_id else None
+        if not record and event.episode_id:
+            record = self.store.find_remote(instance_id, episode_id=event.episode_id)
+        if record and record["status"] in {"queued_remote", "running", "preparing"}:
+            self._hook_hits.add(record["id"])
+            self.ensure_poller()
+
+    async def webhook(self, actor: Actor, action: str, instance_id: str | None = None):
+        self.governance.require(actor, "admin")
+        inst = self.route(actor, instance_id)
+        client = self.instances.get(inst.id)
+        current = self.store.get_webhook(inst.id)
+        if action == "register":
+            if current.get("hook_id"):
+                return {"registered": True, "listening": bool(self._hook_address)}
+            public = self.cfg("webhook", "public_url", "")
+            if not self._hook_address or not public:
+                raise ServiceError("请先启用回调监听，并填写 Mio 能访问的回调基址。")
+            result = await register_webhook(client, public, inst.id)
+            self.store.set_webhook(inst.id, {"hook_id": result.hook_id, "secret": result.secret})
+            self.store.audit("webhook_register", actor_id=actor.scoped_id, instance_id=inst.id)
+            return {"registered": True, "listening": True}
+        hook_id = current.get("hook_id")
+        if action == "test" and hook_id:
+            return await test_webhook(client, hook_id)
+        if action == "remove" and hook_id:
+            await client.call("delete_webhook", path_params={"hook_id": hook_id})
+            self.store.set_webhook(inst.id, {})
+            return {"registered": False}
+        return {
+            "registered": bool(hook_id),
+            "listening": bool(self._hook_address),
+            "deliveries": await webhook_deliveries(client, hook_id) if hook_id else [],
+        }
+
+    async def close(self):
+        self._closing = True
+        await self.listener.close()
+        work = [*self._background, *([self._poller] if self._poller else [])]
+        for task in work:
+            task.cancel()
+        await asyncio.gather(*work, return_exceptions=True)
+        await self.instances.close()

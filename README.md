@@ -5,18 +5,14 @@
 生成完成后按控制面板里选定的策略通知（自动发图 / 只发摘要 / 自动导出文件），随时用 `/mio get` 以 HTML（可选导出模板）/ ZIP / PDF 取回成品。
 
 * 适配 **AstrBot v4.27.3**（`astrbot_version: ">=4.27,<5"`）
-* 需要 **配套 Mio 补丁**（`mio-patch/`，基于 comfy-comic-studio `092c0d5`）
+* 需要提供 **开放 API v2** 的 Mio · 绘页（默认端口 `8788`）
 * 提供独立的 **控制面板页面**（AstrBot WebUI → 插件页面 → Mio 绘页），用于配置默认参数、导出模板与通知策略
 
 ## 安装
 
-1. **给 Mio 打补丁并重启**（见 `mio-patch/README.md`）：
-   ```bash
-   cd comfy-comic-studio && git am /path/to/0001-*.patch
-   MIO_API_TOKEN='至少32位随机字符串' python server.py
-   ```
+1. **准备 Mio**：启动支持开放 API v2 的版本，在 Mio 的 API 令牌设置中创建带 `read`、`write` 和 `render` 权限的令牌。
 2. **安装插件**：AstrBot WebUI → 插件 → 从本地上传 `astrbot_plugin_mio_studio.zip`（或解压到 `data/plugins/astrbot_plugin_mio_studio/`）。依赖仅 `aiohttp`。
-3. **填写连接**：插件配置或「插件页面 → Mio 绘页 → 连接」里填入 Mio 地址与 `MIO_API_TOKEN`，点「测试连接」应显示 *Mio x.x.x 在线*。
+3. **填写连接**：「插件页面 → Mio 绘页 → 连接」填入 Mio 地址（例如 `http://127.0.0.1:8788`）和新令牌，再运行 `/mio ping` 检查连通。
 
 ## 聊天指令
 
@@ -64,15 +60,13 @@ WebUI 左侧「插件页面 → Mio 绘页」：
 
 ## 工作原理
 
-* 资源目录、装配、生成、导出全部由 Mio 后端完成，插件只通过 `/api/v1`（Bearer 令牌）调度：
-  `catalog` → `production/assemble` + `production/start` → 轮询 `production/tasks` → `albums/export` / `assets`。
+* 资源目录、装配、生成和导出都由 Mio 处理。插件通过 `/api/v2` 提交工坊任务，跟踪单个作业，再下载成品。
 * 分幕中的 `{character}` `{outfit}` `{style}` `{scene}` 等占位符由 Mio 用所选预设填充，ComfyUI 工作流也由 Mio 服务端按映射编译，无需浏览器。
-* HTML 导出使用 Mio 的导出模板（补丁把浏览器端的模板编译移植到了 Python），产物自带 `mio-album-data` 元数据，可再次导入 Mio。
-* 任务记录保存在 `data/plugin_data/astrbot_plugin_mio_studio/tasks.json`，导出文件缓存在同目录 `exports/`（自动保留最近 40 个），图片缓存于 `cache/`。
+* 任务记录保存在 `data/plugin_data/astrbot_plugin_mio_studio/tasks.sqlite3`。首次启动会归档同目录的旧 `tasks.json`，保留原文件与任务编号。旧连接地址如指向旧版 Mio，请换为 v2 地址和相应令牌。
 
 ## 常见问题
 
-* **提示“Mio 尚未应用配套补丁”**：`/api/v1/catalog` 不存在，请按 `mio-patch/README.md` 打补丁后重启 Mio。
+* **提示旧版 API**：先升级 Mio，然后用新地址和开放 API 令牌重新连接。
 * **`/mio use` 报“Mio 装配失败：…”**：多为通道未配置密钥 / ComfyUI 不可达 / 工作流未映射，错误文本来自 Mio，请在 Mio 页面中修正。
 * **合并转发不显示**：仅 OneBot 系平台（aiocqhttp / NapCat 等）支持，可在面板把发送方式改为“逐条发送”。
 

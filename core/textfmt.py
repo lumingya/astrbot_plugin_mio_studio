@@ -17,6 +17,7 @@ STATUS_LABEL = {
     "paused": "已暂停",
     "unknown": "未知",
     "missing": "已从 Mio 移除",
+    "archived": "旧版记录",
 }
 STATUS_ICON = {
     "standby": "⏸",
@@ -30,6 +31,7 @@ STATUS_ICON = {
     "paused": "⏸",
     "unknown": "❔",
     "missing": "🗑",
+    "archived": "▤",
 }
 KIND_LABEL = {
     "workflows": "工作流",
@@ -182,6 +184,8 @@ def format_task(view: dict[str, Any]) -> str:
             f"进度：{view.get('done', 0)}/{total} 幕"
             + (f"，失败 {view.get('failed', 0)} 幕" if view.get("failed") else "")
         )
+    if view.get("queuePosition"):
+        lines.append(f"本地队列第 {view['queuePosition']} 位")
     sel = view.get("selection") or {}
     if sel:
         parts = []

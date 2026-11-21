@@ -2,25 +2,31 @@
   "mio": {
     "description": "Mio · 绘页 连接",
     "type": "object",
-    "hint": "本地部署的 comfy-comic-studio；需要先应用插件附带的 Mio 补丁（mio-patch/）并设置 MIO_API_TOKEN 启动。",
+    "hint": "连接提供开放 API v2 的 Mio 绘页。请在 Mio 中创建令牌，然后在独立控制面板保存，或使用服务器环境变量。",
     "items": {
       "base_url": {
         "description": "Mio 地址",
         "type": "string",
-        "default": "http://127.0.0.1:8777",
-        "hint": "Mio 服务的根地址，不带 /api/v1"
+        "default": "http://127.0.0.1:8788",
+        "hint": "Mio 服务根地址，例如 http://127.0.0.1:8788；无需附加 /api/v2。远程服务请使用 HTTPS。"
       },
-      "api_token": {
-        "description": "MIO_API_TOKEN",
+      "api_token_env": {
+        "description": "Mio 令牌环境变量名",
         "type": "string",
-        "default": "mio-comic-studio-token-0123456789abcdef",
-        "hint": "与启动 Mio 时的环境变量 MIO_API_TOKEN 一致，至少 32 个字符。已默认匹配 start.bat 预设令牌。"
+        "default": "MIO_API_V2_TOKEN",
+        "hint": "这里填写变量名，实际 mio_ 令牌通过服务器环境或独立控制面板设置。控制面板私下保存的令牌优先。"
       },
       "request_timeout": {
         "description": "请求超时（秒）",
         "type": "int",
         "default": 60,
-        "hint": "普通 API 调用超时；导出文件时自动放宽到 300 秒以上"
+        "hint": "普通 API 超时。导出由 Mio 后台处理，下载可单独使用更长超时。"
+      },
+      "cloud": {
+        "description": "主实例使用云端配额",
+        "type": "bool",
+        "default": false,
+        "hint": "此实例上的所有出图都计入云端配额；云图通道也会自动使用云端配额。"
       }
     }
   },
@@ -32,19 +38,25 @@
         "description": "默认图像通道 ID",
         "type": "string",
         "default": "",
-        "hint": "留空时优先使用 provider 为 comfyui 的通道。可在控制面板下拉选择，或用 /mio ls ch 查看"
+        "hint": "留空时使用默认工作流。可在控制面板选择已配置的云图通道，或用 /mio ls ch 查看。"
       },
       "workflow_id": {
         "description": "默认工作流 ID",
         "type": "string",
         "default": "",
-        "hint": "仅 ComfyUI 通道需要；留空取 Mio 中第一个工作流"
+        "hint": "留空时使用 Mio 中第一个工作流；与云图通道二选一。"
+      },
+      "storyboard_id": {
+        "description": "默认分镜 ID",
+        "type": "string",
+        "default": "",
+        "hint": "留空时使用 Mio 中第一个分镜。"
       },
       "preset_ids": {
         "description": "默认预设 ID（逗号分隔）",
         "type": "string",
         "default": "",
-        "hint": "留空取 Mio 中第一个预设"
+        "hint": "留空时按创作流程选择预设。"
       },
       "title_template": {
         "description": "画册标题模板",
@@ -53,22 +65,22 @@
         "hint": "可用变量：{story} {preset} {workflow} {channel} {date} {time}"
       },
       "seed_mode": {
-        "description": "种子模式",
+        "description": "旧版种子模式",
         "type": "string",
         "default": "random",
         "options": ["random", "fixed"],
-        "hint": "fixed 需要工作流里映射了种子节点"
+        "hint": "保留旧版设置。v2 工坊按 Mio 工作流内的种子配置生成。"
       },
       "seed": {
-        "description": "固定种子",
+        "description": "旧版固定种子",
         "type": "int",
         "default": 1
       },
       "concurrency": {
-        "description": "并发幕数",
+        "description": "旧版幕内并发",
         "type": "int",
         "default": 0,
-        "hint": "0 = 跟随 Mio 设置"
+        "hint": "保留旧版设置。v2 的单任务幕内并发在 Mio 侧配置；这里的全局任务上限在画图配额中设置。"
       }
     }
   },
@@ -80,7 +92,7 @@
         "description": "默认导出格式",
         "type": "string",
         "default": "html",
-        "options": ["html", "zip", "pdf"]
+        "options": ["html", "zip", "pdf", "strip", "slices", "motion"]
       },
       "layout_id": {
         "description": "默认导出模板（Mio 版式 ID）",
@@ -92,8 +104,8 @@
         "description": "图片处理档位",
         "type": "string",
         "default": "auto",
-        "options": ["auto", "archive", "clean", "publish"],
-        "hint": "archive 原样；clean 去元数据；publish 压缩体积"
+        "options": ["auto", "archive", "clean", "publish", "preview"],
+        "hint": "archive 无损归档；clean 清除元数据；publish 压缩体积；preview 快速预览。"
       },
       "show_captions": {
         "description": "HTML 中显示分幕文案",
@@ -126,15 +138,15 @@
         "description": "任务完成后的通知策略",
         "type": "string",
         "default": "summary",
-        "options": ["images", "summary", "export", "silent"],
-        "hint": "images 自动发送每幕图片；summary 只发摘要（用 /mio get 取件）；export 自动用默认模板导出并发送文件；silent 不通知"
+        "options": ["images", "summary", "strip", "export", "qa_then_send", "silent"],
+        "hint": "summary 发摘要，images 发逐幕图，strip 发长条漫，export 发导出文件，qa_then_send 质检再发，silent 不通知。"
       },
       "send_mode": {
         "description": "图片发送方式",
         "type": "string",
         "default": "auto",
         "options": ["auto", "forward", "separate", "batch"],
-        "hint": "auto：QQ 使用合并转发，其他平台分条发送"
+        "hint": "auto：QQ 优先合并转发；失败时尝试多图消息及逐条发送。"
       },
       "include_captions": {
         "description": "图片附带分幕文案",
@@ -145,6 +157,12 @@
         "description": "单次最多发送图片数",
         "type": "int",
         "default": 30
+      },
+      "max_file_mb": {
+        "description": "单文件发送上限（MiB）",
+        "type": "int",
+        "default": 50,
+        "hint": "超过限制时在聊天中提示，可在控制面板下载原文件。"
       },
       "poll_interval": {
         "description": "进度轮询间隔（秒）",
@@ -176,7 +194,115 @@
         "description": "允许的会话（unified_msg_origin 前缀）",
         "type": "list",
         "default": [],
-        "hint": "留空表示不限制；管理员不受限制"
+        "hint": "留空表示不限制。支持完整 UMO、平台 ID 或 平台:GroupMessage 前缀，按分隔符匹配。"
+      },
+      "creator_ids": {
+        "description": "创作者白名单",
+        "type": "list",
+        "default": [],
+        "hint": "留空时允许授权会话内的成员创作。填写后其他人仅可浏览。支持用户 ID 或 适配器ID:用户ID。"
+      },
+      "viewer_ids": {
+        "description": "只读访客",
+        "type": "list",
+        "default": [],
+        "hint": "限制这些成员只读。名单同时命中时优先采用访客权限，管理员除外。"
+      },
+      "cloud_allowed_ids": {
+        "description": "云端出图白名单",
+        "type": "list",
+        "default": [],
+        "hint": "用 适配器ID:用户ID 逐条添加。未列出的普通用户只能使用本地出图。"
+      }
+    }
+  },
+  "governance": {
+    "description": "画图配额与并发",
+    "type": "object",
+    "items": {
+      "global_limit": {
+        "description": "全局同时运行任务上限",
+        "type": "int",
+        "default": 2,
+        "hint": "所有实例共用此上限。超过上限的新任务会排队。"
+      },
+      "user_active_limit": {
+        "description": "单用户未完成任务上限",
+        "type": "int",
+        "default": 2,
+        "hint": "每个用户正在等待、提交或执行的任务总数。"
+      },
+      "daily_limit": {
+        "description": "单用户每日出图请求上限",
+        "type": "int",
+        "default": 10,
+        "hint": "按服务器本地日期计算；0 表示不限。"
+      },
+      "cooldown_seconds": {
+        "description": "出图请求冷却（秒）",
+        "type": "int",
+        "default": 5,
+        "hint": "同一用户两次提交的最小间隔。"
+      },
+      "cloud_daily_limit": {
+        "description": "单用户每日云端出图上限",
+        "type": "int",
+        "default": 3,
+        "hint": "云端另设上限，同时计入普通日额度；0 表示云端无额外上限。"
+      },
+      "blocked_keywords": {
+        "description": "出图关键词限制",
+        "type": "list",
+        "default": [],
+        "hint": "逐条填写。创作文本包含任一关键词时，不提交生成。"
+      }
+    }
+  },
+  "webhook": {
+    "description": "Webhook 实时通知",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启动签名回调监听",
+        "type": "bool",
+        "default": false,
+        "hint": "Mio 可直达回调地址时启用；其他部署由插件自动轮询。"
+      },
+      "bind_host": {
+        "description": "本地监听地址",
+        "type": "string",
+        "default": "127.0.0.1",
+        "hint": "默认仅本机可访问。跨机器部署可使用可信代理转发。"
+      },
+      "bind_port": {
+        "description": "本地监听端口",
+        "type": "int",
+        "default": 8790
+      },
+      "public_url": {
+        "description": "Mio 可访问的回调基址",
+        "type": "string",
+        "default": "",
+        "hint": "例如 https://bot.example.com。注册时自动补全实例路径并保存签名密钥；请勿附带凭据或查询参数。"
+      }
+    }
+  },
+  "chat": {
+    "description": "聊天卡片与 AI 工具",
+    "type": "object",
+    "items": {
+      "render_mode": {
+        "description": "卡片渲染方式",
+        "type": "string",
+        "default": "auto",
+        "options": ["auto", "image", "text"],
+        "hint": "安装 Pillow 且系统有中文字体时可生成 PNG。图片不可用时自动使用文字。"
+      },
+      "llm_tools_enabled": {
+        "description": "允许 AI 对话工具",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后可用自然语言创作，仍使用同一套角色、任务归属与画图配额。"
       }
     }
   }

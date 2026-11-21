@@ -63,7 +63,6 @@
     let text;
     if (!status.configured) { pill.classList.add("warn"); text = "未配置 Token"; }
     else if (!status.ok) { pill.classList.add("err"); text = "Mio 离线"; }
-    else if (!status.patched) { pill.classList.add("warn"); text = `Mio ${status.version || ""} · 未应用补丁`; }
     else { pill.classList.add("ok"); text = `Mio ${status.version || ""} 在线`; }
     $("#conn-text").textContent = text;
     const detail = $("#conn-detail");
@@ -86,7 +85,7 @@
     $("#f-base_url").value = cfg.mio.base_url || "";
     $("#f-request_timeout").value = cfg.mio.request_timeout;
     $("#f-api_token").value = "";
-    $("#token-hint").textContent = cfg.mio.api_token_set ? `已设置（${cfg.mio.api_token_masked}）；留空保存表示不修改` : "未设置（本地免密模式）";
+    $("#token-hint").textContent = cfg.mio.api_token_set ? "令牌已设置；留空保存表示不修改" : "请填写 Mio 开放 API 的 mio_ 令牌";
     $("#f-admin_only").checked = !!cfg.permissions.admin_only;
     $("#f-allowed_sessions").value = (cfg.permissions.allowed_sessions || []).join("\n");
     $("#f-title_template").value = cfg.defaults.title_template || "";

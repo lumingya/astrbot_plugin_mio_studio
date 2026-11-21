@@ -1,11 +1,4 @@
-"""AstrBot plugin: Mio 绘页 (astrbot_plugin_mio_studio) v2.
-
-Chat commands drive a locally deployed Mio · 绘页 (comfy-comic-studio):
-list numbered resources (workflows / storyboards / presets), assemble and
-start a production task with ``/mio use``, follow its progress and download
-the finished album in the export format and layout configured in the
-standalone control panel.
-"""
+"""AstrBot commands for Mio Studio OpenAPI v2."""
 
 from __future__ import annotations
 
@@ -25,10 +18,12 @@ try:
 except Exception:  # pragma: no cover
     get_astrbot_data_path = None  # type: ignore[assignment]
 
-from .core.mio_client import MioError
+from .core.config import ConfigError
+from .core.governance import Actor, GovernanceError
 from .core.page_api import PageApi
 from .core.service import FORMATS, MioStudioService, ServiceError
 from .core.textfmt import HELP_TEXT, format_catalog, format_jobs, format_list, format_task
+from .core.v2_client import MioApiError
 
 PLUGIN_NAME = "astrbot_plugin_mio_studio"
 _TOKEN_SPLIT = re.compile(r"[\s，、]+")
@@ -48,61 +43,38 @@ class MioStudioPlugin(Star):
         self.page_api.register(context)
 
     async def initialize(self) -> None:
-        self.service.reload_config()
-        self.service.ensure_poller()
-        if not self.service.client.configured:
-            logger.warning(
-                "[mio_studio] Mio API token 未配置或不足 32 位，请在插件配置 / 控制面板中填写。"
-            )
-            return
-        try:
-            status = await self.service.status()
-            if status.get("ok") and status.get("patched"):
-                logger.info(
-                    f"[mio_studio] 已连接 Mio {status.get('version') or ''} @ {self.service.client.base_url}"
-                )
-            else:
-                logger.warning(f"[mio_studio] Mio 连接检查：{status.get('error') or '未知问题'}")
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"[mio_studio] Mio 连接检查失败：{exc}")
+        await self.service.start()
 
     async def terminate(self) -> None:
         await self.service.close()
 
     # ---------------------------------------------------------------- helpers
-    def _allowed(self, event: AstrMessageEvent) -> bool:
-        return self.service.session_allowed(event.unified_msg_origin, event.is_admin())
+    @staticmethod
+    def _actor(event: AstrMessageEvent) -> Actor:
+        return Actor(
+            id=str(event.get_sender_id() or ""),
+            name=str(event.get_sender_name() or ""),
+            session=event.unified_msg_origin,
+            platform=str(event.get_platform_name() or ""),
+            is_admin=event.is_admin(),
+        )
 
     @staticmethod
     def _tokens(text: str | None) -> list[str]:
         return [t for t in _TOKEN_SPLIT.split(str(text or "").strip()) if t]
 
-    async def _guard(self, event: AstrMessageEvent):
-        """Common pre-checks; returns an error message or None."""
-        if not self._allowed(event):
-            return "⛔ 当前会话没有使用 Mio 绘页的权限"
-        if not self.service.client.configured:
-            return "⚠️ 尚未配置 Mio API Token（至少 32 位），请在插件配置或控制面板中填写。"
-        return None
-
     @staticmethod
     def _err(exc: Exception) -> str:
-        if isinstance(exc, ServiceError):
+        if isinstance(exc, (ConfigError, ServiceError, GovernanceError)):
             return f"❌ {exc.message}"
-        if isinstance(exc, MioError):
-            if exc.code == "unpatched" or (
-                exc.status == 400 and "Unknown resource kind" in exc.message
-            ):
-                return "❌ Mio 尚未应用配套补丁（缺少 /api/v1/catalog 等路由），请先按 mio-patch/README 应用补丁并重启 Mio。"
+        if isinstance(exc, MioApiError):
             return f"❌ Mio：{exc.message}"
-        return f"❌ 内部错误：{exc}"
+        logger.error("[mio_studio] 聊天操作失败：%s", type(exc).__name__)
+        return "❌ Mio 操作遇到内部错误，请稍后重试。"
 
     async def _list(self, event: AstrMessageEvent, kinds: tuple[str, ...]):
-        problem = await self._guard(event)
-        if problem:
-            return problem
         try:
-            cat = await self.service.catalog(force=True)
+            cat = await self.service.catalog(actor=self._actor(event), force=True)
         except Exception as exc:
             return self._err(exc)
         defaults = self.service.catalog_defaults()
@@ -119,13 +91,16 @@ class MioStudioPlugin(Star):
     @filter.command("mio ping")
     async def cmd_ping(self, event: AstrMessageEvent):
         """检查与 Mio 的连接"""
-        if not self._allowed(event):
-            yield event.plain_result("⛔ 当前会话没有使用 Mio 绘页的权限")
+        try:
+            actor = self._actor(event)
+            status = await self.service.status(actor=actor)
+            if actor.session:
+                self.service.store.seen_session(actor.session, actor.platform, actor.name)
+        except Exception as exc:
+            yield event.plain_result(self._err(exc))
             return
-        status = await self.service.status()
         if status.get("ok"):
-            text = f"✅ Mio {status.get('version') or ''} 在线 @ {status.get('baseUrl')}"
-            text += "\n补丁：已应用" if status.get("patched") else f"\n⚠️ {status.get('error')}"
+            text = f"✅ Mio {status.get('version') or ''} 在线（开放 API v2）"
         else:
             text = f"❌ Mio 不可用：{status.get('error')}"
         tasks = status.get("tasks") or {}
@@ -164,12 +139,8 @@ class MioStudioPlugin(Star):
     @filter.command("mio use")
     async def cmd_use(self, event: AstrMessageEvent, args: GreedyStr):
         """/mio use <工作流#> <分幕#> <预设#[,预设#]> [通道#] 创建并开始生成"""
-        problem = await self._guard(event)
-        if problem:
-            yield event.plain_result(problem)
-            return
         tokens = self._tokens(args)
-        if not tokens:
+        if not 1 <= len(tokens) <= 4:
             yield event.plain_result(
                 "用法：/mio use <工作流#> <分幕#> <预设#[,预设#]> [通道#]\n或 /mio use <分幕#>（使用面板默认的工作流 / 预设 / 通道）\n先用 /mio ls 查看编号。"
             )
@@ -186,38 +157,37 @@ class MioStudioPlugin(Star):
             )
             channel = tokens[3] if len(tokens) > 3 else None
         try:
-            selection = await self.service.resolve_selection(workflow, storyboard, presets, channel)
-            record = await self.service.create_task(
-                selection,
-                umo=event.unified_msg_origin,
-                sender_id=str(event.get_sender_id() or ""),
-                sender_name=str(event.get_sender_name() or ""),
-                platform=str(event.get_platform_name() or ""),
+            actor = self._actor(event)
+            selection = await self.service.resolve_selection(
+                workflow, storyboard, presets, channel, actor=actor
             )
+            record = await self.service.create_task(selection, actor=actor)
+            view = self.service.merge_view(record, None)
         except Exception as exc:
             yield event.plain_result(self._err(exc))
             return
         sel = record.get("selection") or {}
-        lines = [f"🚀 任务 #{record['num']} 已创建并开始生成", f"《{record.get('title')}》"]
+        position = view.get("queuePosition")
+        submitted = f"，当前排第 {position} 位" if position else ""
+        lines = [f"🚀 任务 #{record['num']} 已受理{submitted}", f"《{record.get('title')}》"]
         if sel.get("workflowTitle"):
             lines.append(f"工作流：{sel['workflowTitle']}")
-        lines.append(
-            f"分幕：{sel.get('storyboardTitle')}（{selection['storyboard'].get('frameCount', '?')} 幕）"
-        )
-        lines.append("预设：" + " + ".join(sel.get("presetTitles") or []))
-        lines.append(f"通道：{sel.get('channelTitle')}")
+        if sel.get("storyboardTitle"):
+            lines.append(f"分幕：{sel['storyboardTitle']}")
+        if sel.get("presetTitles"):
+            lines.append("预设：" + " + ".join(sel["presetTitles"]))
+        if sel.get("channelTitle"):
+            lines.append(f"通道：{sel['channelTitle']}")
         lines.append(f"进度：/mio status {record['num']}　成品：/mio get {record['num']}")
         yield event.plain_result("\n".join(lines))
 
     @filter.command("mio jobs")
     async def cmd_jobs(self, event: AstrMessageEvent):
         """我的任务列表"""
-        problem = await self._guard(event)
-        if problem:
-            yield event.plain_result(problem)
-            return
         try:
-            views, others = await self.service.task_views(limit=12, force=True)
+            views, others = await self.service.task_views(
+                actor=self._actor(event), limit=12, force=True
+            )
         except Exception as exc:
             yield event.plain_result(self._err(exc))
             return
@@ -226,13 +196,10 @@ class MioStudioPlugin(Star):
     @filter.command("mio status")
     async def cmd_status(self, event: AstrMessageEvent, num: str = ""):
         """查看任务进度：/mio status [#]"""
-        problem = await self._guard(event)
-        if problem:
-            yield event.plain_result(problem)
-            return
         try:
-            record = self.service.find_record(num, umo=event.unified_msg_origin)
-            view = await self.service.task_view(record)
+            actor = self._actor(event)
+            record = self.service.find_record(num, actor=actor)
+            view = await self.service.task_view(record, actor=actor)
         except Exception as exc:
             yield event.plain_result(self._err(exc))
             return
@@ -240,46 +207,49 @@ class MioStudioPlugin(Star):
 
     @filter.command("mio get")
     async def cmd_get(self, event: AstrMessageEvent, args: GreedyStr):
-        """下载成品：/mio get [#] [html|zip|pdf|img] [模板#]"""
-        problem = await self._guard(event)
-        if problem:
-            yield event.plain_result(problem)
-            return
+        """下载成品：/mio get [#] [html|zip|pdf|strip|slices|motion|img] [模板#]"""
         tokens = self._tokens(args)
+        formats = " / ".join((*FORMATS, "img"))
         num: str | None = None
         fmt: str | None = None
         layout: str | None = None
         for token in tokens:
             low = token.lower()
             if low in FORMATS or low in ("img", "image", "images", "图片"):
+                if fmt is not None:
+                    yield event.plain_result("❌ 每次取件只能选择一种导出格式")
+                    return
                 fmt = "img" if low in ("img", "image", "images", "图片") else low
             elif num is None and (token.lstrip("#").isdigit() or token.startswith("assembly-")):
                 num = token
             elif layout is None:
                 if low.isascii() and low.isalpha() and len(low) <= 6:
                     yield event.plain_result(
-                        f"❌ 未知格式「{token}」，支持 html / zip / pdf / img；导出模板请用 /mio ls tpl 的编号"
+                        f"❌ 未知格式「{token}」，支持 {formats}；导出模板请用 /mio ls tpl 的编号"
                     )
                     return
                 layout = token
+            else:
+                yield event.plain_result("用法：/mio get [任务号] [导出格式] [模板号]")
+                return
         try:
-            record = self.service.find_record(num, umo=event.unified_msg_origin)
-            view = await self.service.task_view(record)
+            actor = self._actor(event)
+            record = self.service.find_record(num, actor=actor)
+            view = await self.service.task_view(record, actor=actor)
             if view.get("statusKey") == "missing":
                 raise ServiceError(f"任务 #{record['num']} 已从 Mio 队列移除")
-            if not view.get("albumId"):
+            if not (view.get("episode_id") or view.get("albumId")):
                 raise ServiceError(f"任务 #{record['num']} 还没有关联画册")
             if view.get("done", 0) == 0:
                 raise ServiceError(
                     f"任务 #{record['num']} 还没有生成完成的分幕（{view.get('statusKey')}）"
                 )
-            umo = event.unified_msg_origin
             if fmt == "img":
                 yield event.plain_result(
                     f"⏳ 正在发送任务 #{record['num']} 的 {view.get('done', 0)} 幕图片…"
                 )
                 count = await self.service.send_images(
-                    record, umo, platform=str(event.get_platform_name() or "")
+                    record, actor.session, actor=actor, platform=actor.platform
                 )
                 if count == 0:
                     yield event.plain_result("没有可发送的图片")
@@ -288,19 +258,21 @@ class MioStudioPlugin(Star):
             if view.get("statusKey") != "complete":
                 note = f"（任务尚未全部完成，导出当前已生成的 {view.get('done', 0)}/{view.get('total', 0)} 幕）"
             yield event.plain_result(
-                f"⏳ 正在导出任务 #{record['num']}（{fmt or self.service.export_format()}）… {note}"
+                f"⏳ 正在导出任务 #{record['num']}（{fmt or self.service.export_format(actor.session)}）… {note}"
             )
-            await self.service.send_export(record, umo, fmt=fmt, layout=layout)
+            await self.service.send_export(
+                record, actor.session, actor=actor, fmt=fmt, layout=layout
+            )
         except Exception as exc:
             yield event.plain_result(self._err(exc))
 
     async def _action(self, event: AstrMessageEvent, num: str, action: str):
-        problem = await self._guard(event)
-        if problem:
-            return problem
+        if not num:
+            return "请提供任务编号，例如 /mio pause 1。"
         try:
-            record = self.service.find_record(num, umo=event.unified_msg_origin)
-            return await self.service.task_action(record, action)
+            actor = self._actor(event)
+            record = self.service.find_record(num, actor=actor)
+            return await self.service.task_action(record, action, actor=actor)
         except Exception as exc:
             return self._err(exc)
 
