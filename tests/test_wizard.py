@@ -57,6 +57,23 @@ def test_wizard_cancel_and_isolation(catalog):
     assert wizard.cancel(BOB, ROOM)
 
 
+def test_wizard_filter_wakes_only_for_current_senders_replies(catalog):
+    wizard = WizardManager(ttl=10)
+    wizard.start(ALICE, ROOM, catalog, now=0)
+    for token in ("午夜书店", "2", "搜索 午夜", "取消"):
+        assert wizard.accepts(ALICE, ROOM, token, now=1)
+    for token in ("聊聊天", "/mio use 1", "1,2"):
+        assert not wizard.accepts(ALICE, ROOM, token, now=1)
+    assert not wizard.accepts(BOB, ROOM, "2", now=1)
+    assert not wizard.accepts(ALICE, OTHER, "2", now=1)
+    assert not wizard.accepts(ALICE, ROOM, "2", now=10)
+    assert "2/3" in wizard.consume(ALICE, ROOM, "2", now=2).text
+    assert "3/3" in wizard.consume(ALICE, ROOM, "1", now=3).text
+    assert wizard.accepts(ALICE, ROOM, "1、2", now=4)
+    assert not wizard.accepts(ALICE, ROOM, "1、下次吧", now=4)
+    assert wizard.consume(ALICE, ROOM, "1、2", now=5).completed
+
+
 def test_paging_search_and_defaults(catalog):
     wizard = WizardManager(page_size=1)
     initial = wizard.start(ALICE, ROOM, catalog, now=0)

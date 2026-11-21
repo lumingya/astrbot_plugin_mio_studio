@@ -69,7 +69,14 @@ def _actor(event: AstrMessageEvent) -> Actor:
 def _wizard_text(event: AstrMessageEvent) -> str:
     value = event.message_str.strip()
     # AstrBot can remove the wake prefix before it evaluates plugin filters.
-    return "" if value.split(maxsplit=1)[:1] == ["mio"] else value
+    return "" if value.casefold().split(maxsplit=1)[:1] == ["mio"] else value
+
+
+class _HelpOnly(filter.CustomFilter):
+    def filter(self, event: AstrMessageEvent, cfg: AstrBotConfig) -> bool:
+        # Bare aliases are normally prefix matches, so "mio" must be exact here.
+        text = " ".join(event.get_message_str().split())
+        return text in {"mio", "mio help"} or text.startswith("mio help ")
 
 
 class _WizardInput(filter.CustomFilter):
@@ -163,6 +170,7 @@ class MioStudioPlugin(Star):
         return "\n".join(lines)
 
     @filter.command("mio help", alias={"mio"})
+    @filter.custom_filter(_HelpOnly)
     async def cmd_help(self, event: AstrMessageEvent, args: GreedyStr):
         """Mio 指令帮助。"""
         try:
@@ -202,11 +210,15 @@ class MioStudioPlugin(Star):
                 actor=_actor(event), instance_id=selected.instance_id
             )
             defaults = self.service.catalog_defaults()
+            trimmed = {kind: (catalog.get(kind) or [])[:20] for kind in kinds}
+            overflow = any(len(catalog.get(kind) or []) > 20 for kind in kinds)
             fallback = (
-                format_list(kinds[0], catalog.get(kinds[0]) or [], defaults=defaults)
+                format_list(kinds[0], trimmed[kinds[0]], defaults=defaults)
                 if len(kinds) == 1
-                else format_catalog(catalog, kinds, defaults)
+                else format_catalog(trimmed, kinds, defaults)
             )
+            if overflow:
+                fallback += "\n\n聊天最多列出每类 20 项；完整目录可在控制面板查看。"
             yield await self._card(event, self.cards.catalog, fallback, catalog, kinds)
         except Exception as exc:
             yield event.plain_result(self._err(exc))
@@ -675,21 +687,26 @@ class MioStudioPlugin(Star):
         participation = self.wizard.consume(actor.scoped_id, actor.session, _wizard_text(event))
         if not participation:
             return
-        event.stop_event()
+        # A stopped AstrBot pipeline won't send a yielded result. Send the
+        # handled reply first, then stop it from turning into a separate LLM turn.
+        event.should_call_llm(False)
         selection = participation.selection
-        if not selection:
-            yield event.plain_result(participation.text)
-            return
+        message = participation.text
         try:
-            resolved = await self.service.resolve_selection(
-                selection.workflow,
-                selection.storyboard,
-                list(selection.presets),
-                None,
-                actor=actor,
-                instance_id=selection.instance_id,
-            )
-            record = await self.service.create_task(resolved, actor=actor)
-            yield event.plain_result(self._accepted(record))
+            if selection:
+                resolved = await self.service.resolve_selection(
+                    selection.workflow,
+                    selection.storyboard,
+                    list(selection.presets),
+                    None,
+                    actor=actor,
+                    instance_id=selection.instance_id,
+                )
+                record = await self.service.create_task(resolved, actor=actor)
+                message = self._accepted(record)
         except Exception as exc:
-            yield event.plain_result(self._err(exc))
+            message = self._err(exc)
+        try:
+            await event.send(event.plain_result(message))
+        finally:
+            event.stop_event()

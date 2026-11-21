@@ -210,6 +210,32 @@ class WizardManager:
             return True, matches[0].id
         return bool(matches), ""
 
+    @staticmethod
+    def _token(text: str) -> str:
+        token = text.strip()
+        return token if 0 < len(token) <= 1024 and not token.startswith("/") else ""
+
+    def _preset_choices(self, state: _Session, token: str):
+        if state.stage != 2 or not re.search(r"[,，、]", token):
+            return None
+        choices = [self._choose(state, part.strip()) for part in re.split(r"[,，、]", token)]
+        return choices if all(known for known, _ in choices) else None
+
+    def accepts(self, actor_key: str, session: str, text: str, *, now: float | None = None) -> bool:
+        """Check if a message belongs to a live wizard before AstrBot wakes the bot."""
+        token = self._token(text)
+        state = self._sessions.get((actor_key, session))
+        if not token or not state or state.expires <= (self._clock() if now is None else now):
+            return False
+        if (
+            token.casefold() in _CANCEL
+            or token in _NEXT | _PREVIOUS
+            or token == "查看全部"
+            or token.startswith(("搜索 ", "查 "))
+        ):
+            return True
+        return self._choose(state, token)[0] or self._preset_choices(state, token) is not None
+
     def consume(
         self, actor_key: str, session: str, text: str, *, now: float | None = None
     ) -> WizardReply | None:
@@ -217,8 +243,8 @@ class WizardManager:
         self.prune(now)
         key = (actor_key, session)
         state = self._sessions.get(key)
-        token = text.strip()
-        if not state or not token or len(token) > 1024 or token.startswith("/"):
+        token = self._token(text)
+        if not state or not token:
             return None
         if token.casefold() in _CANCEL:
             self._sessions.pop(key)
@@ -236,12 +262,8 @@ class WizardManager:
         else:
             # Try exact names first; resource titles themselves may contain commas.
             matched, chosen = self._choose(state, token)
-            if not matched and state.stage == 2 and re.search(r"[,，、]", token):
-                parts = [p.strip() for p in re.split(r"[,，、]", token)]
-                picks = [self._choose(state, part) for part in parts]
-                if not all(known for known, _ in picks):
-                    return None
-                if len(parts) > 128 or any(not item_id for _, item_id in picks):
+            if not matched and (picks := self._preset_choices(state, token)) is not None:
+                if len(picks) > 128 or any(not item_id for _, item_id in picks):
                     return WizardReply("请检查预设编号。使用默认值时请单独回复 0。")
                 return self._complete(
                     key, state, tuple(dict.fromkeys(id_ for _, id_ in picks)), now
